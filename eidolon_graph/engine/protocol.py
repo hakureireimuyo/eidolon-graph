@@ -34,7 +34,7 @@ from ..model.types import Level
 class TickContext:
     """一个输入组执行一次的上下文(方法调用):只含本组输入,状态/配置全组共享。"""
 
-    run_no: int                       # 运行序号(注入→单遍执行→静止)
+    run_no: int                       # 运行序号(注入→传播至静止)
     group: str                        # 组名;源节点自走执行为 "step"
     rng: Rng                          # 本节点独立随机流
     data_in: dict[str, Any]           # 本组输入已解析值(关闭的端口不出现)

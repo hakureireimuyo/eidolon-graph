@@ -16,9 +16,10 @@ from .signal import INACTIVE
 class SubgraphNodeImpl(NodeImpl):
     """把一张图封装成节点:外部端口契约由 NodeType 声明,内部结构对上层不可见。"""
 
-    def __init__(self, outer_type: NodeType) -> None:
+    def __init__(self, outer_type: NodeType, node_id: str = "") -> None:
         super().__init__()
         self.outer = outer_type
+        self.node_id = node_id  # 外层实例 id:内部投递的脏标记溯源到外层端口
 
     def tick(self, ctx: TickContext) -> TickOutput:
         inner = ctx.inner
@@ -36,13 +37,14 @@ class SubgraphNodeImpl(NodeImpl):
             node, port = target
             if p in ctx.closed_in:
                 inner.forced_inactive.add((node, port))
+                inner._invalidate(node, port, src=self.node_id, src_port=p)
                 continue
-            inner._impls[node].receive(port, value)
+            inner._receive(node, port, value, src=self.node_id, src_port=p)
         for c, lvl in ctx.control_in.items():
             target = pm.get(c)
             if target is not None:
                 node, port = target
-                inner.control_in_levels[(node, port)] = lvl
+                inner._set_ctrl(node, port, lvl, src=self.node_id, src_port=c)
 
         # 2) 内部单遍运行(同步语义:内部节点读自己的缓冲与信号)
         inner.run()

@@ -1,21 +1,25 @@
-"""执行引擎:注入 → 按节点声明序单遍执行 → 静止。
+"""执行引擎:注入 → 脏节点传播(图路径遍历)→ 静止。
 
 执行模型 = 事件驱动的图状态转换系统(见 docs/graph-execution-model.md):
-- 宿主注入输入事件(数据→缓冲,控制→电平),引擎按声明序单遍执行;
+- 宿主注入输入事件(数据→缓冲,控制→电平),引擎从受影响节点出发按数据流因果
+  序传播:触发即投递、投递即唤醒下游,队列排空即静止(非全图循环扫描);
 - 节点 = 类实例:初始化输入 = __init__,输入组 = 方法(组内全部有效输入有新值
   即执行、消费清零),源节点每轮运行执行一次;
 - 端口信号:输入信号 = 显式信号线(为准)或上游输出信号传导;数据输出信号电平
   只由自动传导决定(对应输入组全关 → 输出关闭,实现永不写信号),但信号端口可
   显式拉线到任意信号接收端(显式路由);信号逻辑只在信号节点内;
-- 每节点独立随机流(世界种子 + 节点 id 派生),声明序即执行序,同一图同一输入
-  序列结果唯一;
+- 每节点独立随机流(世界种子 + 节点 id 派生),执行序 = 注入序 + 数据流因果序,
+  同一图同一输入序列结果唯一;
+- 因果可溯:每次唤醒携带结构化脏标记(Mark = 为什么访问),因果 trace
+  (run+seq 时间线)记录世界为什么变成这个状态(独立于日志、不进快照);
 - 实时模式(realtime=True):世界自驱——源节点按自身发射规则(impl.schedule)
-  定时发事件,引擎后台线程调度单遍执行;事件源 = 节点,宿主不伪造事件。
+  定时发事件,引擎后台线程调度执行;事件源 = 节点,宿主不伪造事件。
   同步模式(默认)不变:宿主调用 run(events),确定性可复现。
 """
 
 from __future__ import annotations
 
+from collections import deque
 import threading
 import time
 from copy import deepcopy
@@ -30,6 +34,14 @@ from .rng import Rng, derive_seed
 from .subgraph import SubgraphNodeImpl
 
 _MISSING = object()  # 端口无值哨兵(与"值为 None"区分)
+
+# 脏标记种类:影响节点求值语义的事件(与"值是否变化"无关)
+K_DATA = "data"        # 数据到达(到达即新鲜,覆盖旧值)
+K_CTRL = "ctrl"        # 控制电平变化
+K_SIGNAL = "signal"    # 上游输出信号变化 / 子图边界强制关闭 → 推导失效
+K_SOURCE = "source"    # 自发型源节点播种(每轮 step)
+K_PULL = "pull"        # 拉取型源节点尾播种(读最新全局)
+K_COOL = "cool"        # 熔断冷却播种(每轮扣减一次)
 
 
 @dataclass
@@ -70,6 +82,38 @@ class CompiledGraph:
         return cls(graph=graph, types=types, out_edges=out_edges, in_edge=in_edge)
 
 
+@dataclass(frozen=True)
+class Mark:
+    """脏标记:一个会影响节点求值语义的事件——为什么访问这个节点。
+
+    与"值是否变化"无关:数据到达即新鲜(K_DATA),电平真变了才 K_CTRL,
+    上游输出信号重算使推导可能失效 = K_SIGNAL。src 字段给出因果来源
+    (上游节点/端口/槽);None = 宿主注入或轮次播种。目标节点由
+    World._marks 的键给出,标记本身不自带 dst。
+    """
+
+    kind: str
+    port: str | None = None          # 目标端口
+    src: str | None = None           # 来源节点(None = 宿主/播种)
+    src_port: str | None = None      # 来源端口
+    src_slot: str | None = None      # 来源槽(data / ctrl / signal)
+
+
+@dataclass
+class NodeTurn:
+    """节点在当前 epoch(一次 run)内已消耗的执行机会——evaluation budget。
+
+    Mark = 为什么访问这个节点;NodeTurn = 本轮已经做过什么;节点状态 =
+    跨轮保存什么。三个职责分开;epoch 边界由 run() 重建本表表达。
+    """
+
+    stepped: bool = False                       # 源 step 已执行(每轮一次)
+    fired_groups: set[str] = field(default_factory=set)   # 已触发的组(每组每轮至多一次)
+    signal_runs: int = 0                        # 输出信号重算次数(每轮至多两次)
+    refired: bool = False                       # 纯信号源再触发(每轮至多一次)
+    cooled: bool = False                        # 熔断冷却已扣减(每轮一次)
+
+
 @dataclass
 class NodeState:
     """节点运行时状态(世界事实):状态字段表 + 熔断器 + 内嵌世界。
@@ -86,7 +130,7 @@ class NodeState:
 
 
 class World:
-    """事件驱动的图状态转换系统:注入 → 声明序单遍执行 → 静止。
+    """事件驱动的图状态转换系统:注入 → 脏节点传播 → 静止。
 
     宿主同步调用 run(events);一次运行原子完成,编辑事务与快照天然位于
     两次运行之间(世界静止)。
@@ -132,11 +176,18 @@ class World:
         self.control_in_levels: dict[tuple[str, str], str] = {}
         self.control_out_levels: dict[tuple[str, str], str] = {}
         self.run_outputs: dict[tuple[str, str], Any] = {}   # 本次运行各输出端口的产出
-        self._stepped: set[str] = set()                # 本轮已发射的源节点(每轮一次)
-        self._fired_once: set[tuple[str, str]] = set()  # 本轮已触发的组(每组每轮至多一次)
-        self._cooled: set[str] = set()                 # 本轮已扣减熔断冷却的节点(每轮一次)
+        # 脏节点传播:投递即入队、出队即访问(持续字段,跨 run 边界排空——
+        # resume 的冲刷投递发生在 run 之前)
+        self._work: deque[str] = deque()
+        self._queued: set[str] = set()                 # 已在队列中(去重,出队释放)
+        self._marks: dict[str, set[Mark]] = {}         # 节点 → 本轮累积的脏标记(出队消费)
+        self._turns: dict[str, NodeTurn] = {}          # 节点 → 本轮执行预算(每轮重建)
         self.forced_inactive: set[tuple[str, str]] = set()  # 子图边界注入的关闭
         self.log: list[dict] = []  # 事件日志:只追加、可截断
+        # 因果 trace:世界为什么变成这个状态(run+seq = 确定性因果时间线;
+        # 独立于 log,不进快照;只追加、可截断)
+        self.trace: list[dict] = []
+        self._seq = 0  # 本轮因果传播序号(确定,非时间戳)
         self.fuse_limit = fuse_limit
         self.fuse_cool_ticks = fuse_cool_ticks
         # 换实现的宿主迁移函数:new_type_name → (旧状态 dict, 新 NodeType) → 新状态 dict
@@ -159,7 +210,7 @@ class World:
                            initialized=not bool(nt.init_in))
             if nt.impl.kind == "subgraph":
                 st.inner = self._build_inner(ni, nt, stack)
-                impl: NodeImpl = SubgraphNodeImpl(nt)
+                impl: NodeImpl = SubgraphNodeImpl(nt, ni.node_id)
             else:
                 impl_cls = self.registry.get(nt.impl.name or nt.name)
                 impl = impl_cls()
@@ -192,36 +243,54 @@ class World:
     def run(self, events: list[Event] | None = None) -> None:
         """注入事件 → 数据流同轮收敛 → 静止。原子操作。
 
-        多遍扫描:每遍按声明序执行,一遍无任何触发即静止。每组每轮至多
-        一次(新输入到达即触发,触发即消费)——数据齐全即输出,不受声明
-        顺序延误;反馈环因每组每轮一次而跨轮迭代。
+        脏节点传播(图路径遍历,非全图循环扫描):注入目标与源节点播种,
+        节点触发即向下游投递、投递即唤醒下游——数据齐全即输出,不受声明
+        顺序延误。一次 run 就是一个 epoch(逻辑因果传播域):注入 → 播种
+        → 传播至因果闭包 → 静止;反馈环被本 epoch 的执行预算(NodeTurn)
+        阻挡,下一 epoch 重新迭代。
         同步模式:宿主调用;实时模式:由调度线程按源节点发射时刻调用。
         """
         with self._lock:
             self.run_no += 1
             self.run_outputs = {}
-            self._stepped = set()
-            self._fired_once = set()
-            self._cooled = set()
+            self._turns = {}  # epoch 预算重建:上一轮的执行机会不跨轮
+            self._seq = 0     # 因果传播序号从零起
             if events:
                 for ev in events:
-                    self._deliver(ev)
-            while True:
-                fired_any = False
-                for ni in self.graph.nodes:
-                    fired_any = self._node_turn(ni.node_id) or fired_any
-                if not fired_any:
-                    break
+                    self._deliver(ev)      # 注入序入队(事件是本轮执行的起因)
+            for ni in self.graph.nodes:
+                nt = self.compiled.types[ni.node_id]
+                # 自发型源节点按声明序播种(每轮运行一次);拉取型源节点尾播种(见下)
+                if nt.is_source() and not self._is_pull_source(nt):
+                    self._seed(ni.node_id, K_SOURCE)
+            for ni in self.graph.nodes:    # 熔断冷却节点播种(冷却每轮只扣一次)
+                if self._states[ni.node_id].circuit_open:
+                    self._seed(ni.node_id, K_COOL)
+            while self._work:
+                nid = self._work.popleft()
+                self._queued.discard(nid)
+                marks = self._marks.pop(nid, set())
+                self._node_turn(nid, marks)
+            for ni in self.graph.nodes:
+                # 拉取型源节点尾播种:因果传播全部完成后执行——同轮读到本轮
+                # 最新全局写入(不再依赖声明序)
+                if self._is_pull_source(self.compiled.types[ni.node_id]):
+                    self._seed(ni.node_id, K_PULL)
+            while self._work:
+                nid = self._work.popleft()
+                self._queued.discard(nid)
+                marks = self._marks.pop(nid, set())
+                self._node_turn(nid, marks)
 
     # ------------------------------------------------------------------
     # 实时调度(事件源 = 节点自身,引擎不硬编码节奏)
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        """启动实时运行:后台线程按源节点的发射规则调度单遍执行。
+        """启动实时运行:后台线程按源节点的发射规则调度执行。
 
         有周期(schedule 返回秒数)的源节点首轮立即发射、之后按周期;
-        无周期(None)的源节点不唤醒调度——仅在单遍执行时顺带发射。
+        无周期(None)的源节点不唤醒调度——仅随每次执行顺带发射。
         """
         if not self._realtime:
             raise RuntimeError("实时调度仅在 realtime=True 的世界可用")
@@ -260,20 +329,23 @@ class World:
         self.run()  # 冲刷后的级联完成(投递已恢复,新产出正常传播)
 
     def _flush_pending(self) -> None:
-        """冲刷暂停期挂起的投递(调用方持锁):最新值按端口覆盖。"""
+        """冲刷暂停期挂起的投递(调用方持锁):最新值按端口覆盖。
+
+        投递即入队,由随后的 run() 排空完成级联传递。
+        """
         for (nid, p), value in self._pending_data.items():
             for (dn, dp, dslot) in self.compiled.out_edges.get((nid, p, "data"), []):
                 if dslot != "data":
                     continue
-                self._impls[dn].receive(dp, value)
+                self._receive(dn, dp, value, src=nid, src_port=p)
         for (nid, c), lvl in self._pending_ctrl.items():
             for (dn, dp, _dslot) in self.compiled.out_edges.get((nid, c, "signal"), []):
                 if dp in self.compiled.types[dn].control_in_map():
-                    self.control_in_levels[(dn, dp)] = lvl
+                    self._set_ctrl(dn, dp, lvl, src=nid, src_port=c)
         for (nid, p), lvl in self._pending_signal.items():
             for (dn, dp, dslot) in self.compiled.out_edges.get((nid, p, "data"), []):
                 if dslot == "signal" and dp in self.compiled.types[dn].control_in_map():
-                    self.control_in_levels[(dn, dp)] = lvl
+                    self._set_ctrl(dn, dp, lvl, src=nid, src_port=p)
         for name, value in self._pending_global.items():
             self.globals_[name] = value
         self._pending_data.clear()
@@ -295,7 +367,7 @@ class World:
         self._sched_thread.start()
 
     def _sched_loop(self) -> None:
-        """调度循环:等到任一源节点发射时刻 → 单遍执行(执行中重查各源下一时刻)。"""
+        """调度循环:等到任一源节点发射时刻 → 执行一轮(执行中重查各源下一时刻)。"""
         while not self._sched_stop.is_set():
             with self._lock:
                 # 清理编辑后消失节点的陈旧条目(自愈)
@@ -320,8 +392,8 @@ class World:
     def _source_due(self, nid: str) -> bool:
         """实时模式下源节点是否到发射时刻。
 
-        登记了周期(在 _next_due 中)→ 到期才发射;未登记(None 调度)→ 每个
-        单遍都发射(不主动唤醒调度,仅随其他节点的发射顺带执行)。
+        登记了周期(在 _next_due 中)→ 到期才发射;未登记(None 调度)→ 每轮
+        执行都发射(不主动唤醒调度,仅随其他节点的发射顺带执行)。
         """
         if not self._realtime:
             return True
@@ -342,46 +414,129 @@ class World:
             self._next_due[nid] = time.monotonic() + max(float(delay), 0.01)
 
     def _deliver(self, ev: Event) -> None:
+        # 宿主注入:按注入序入队队尾(事件是本轮执行的起因,先于源节点播种)
         if ev.kind == "data":
-            self._impls[ev.node].receive(ev.port, ev.value)  # 一格缓冲,新值覆盖
+            self._receive(ev.node, ev.port, ev.value, front=False)
         else:
-            self.control_in_levels[(ev.node, ev.port)] = ev.value
+            self._set_ctrl(ev.node, ev.port, ev.value, front=False)
 
-    def _node_turn(self, nid: str) -> bool:
-        """节点转一圈:返回本轮是否触发了发射(驱动多遍扫描至静止)。"""
+    # ------------------------------------------------------------------
+    # 脏节点传播:投递 = 变更,统一经助手标记原因并入队唤醒下游
+    # ------------------------------------------------------------------
+
+    def _note(self, m: Mark, dst: str) -> None:
+        """记录因果事件:脏标记并入本轮标记表 + 追加因果 trace 条目。
+
+        trace 记录"世界为什么变成这个状态"(run+seq = 确定性的因果传播
+        时间线,非时间戳);log 记录"程序当时打印了什么";快照记录"世界是
+        什么状态"——三者层次不同,trace 不进快照。
+        """
+        self._marks.setdefault(dst, set()).add(m)
+        self._seq += 1
+        self.trace.append({"run": self.run_no, "seq": self._seq, "kind": m.kind,
+                           "dst": dst, "port": m.port,
+                           "src": m.src, "src_port": m.src_port, "src_slot": m.src_slot})
+
+    def _seed(self, nid: str, kind: str) -> None:
+        """轮次播种:源节点/熔断冷却/拉取型源——每轮一次的唤醒。"""
+        self._note(Mark(kind=kind), nid)
+        self._enqueue(nid)
+
+    def _enqueue(self, nid: str, front: bool = False) -> None:
+        """节点入队(已在队列则保持原位置,出队时释放)——一轮内访问次数有界。
+
+        front=True(控制电平变化):插队队首——门控变化先于既有队列中的访问
+        结算,后续弹出的节点看到的是新电平下的信号真值(数据触发不看旧信号)。
+        """
+        if nid not in self._queued:
+            self._queued.add(nid)
+            if front:
+                self._work.appendleft(nid)
+            else:
+                self._work.append(nid)
+
+    def _receive(self, nid: str, port: str, value: Any, *, src: str | None = None,
+                 src_port: str | None = None, front: bool = True) -> None:
+        """数据投递:一格缓冲新值覆盖 + 唤醒(新值即新鲜,与值是否相同无关)。
+
+        front=True(内部投递):插队队首——因果路径优先走完(深度优先遍历),
+        一个事件的传播路径先于兄弟种子结算,路径尽头由 fresh/fired_once 截断。
+        front=False(宿主注入):按注入序入队队尾。
+        """
+        self._impls[nid].receive(port, value)
+        self._note(Mark(kind=K_DATA, port=port, src=src, src_port=src_port,
+                        src_slot="data"), nid)
+        self._enqueue(nid, front=front)
+
+    def _set_ctrl(self, nid: str, port: str, lvl: str, *, src: str | None = None,
+                  src_port: str | None = None, front: bool = True) -> None:
+        """控制电平投递:仅电平变化才唤醒(变化才影响门控/信号推导)。
+
+        front=True(内部投递):插队队首——门控变化先于既有队列中的访问结算,
+        被门控节点的信号立即重算;信号关闭沿推导链惰性传播(队尾,见
+        _update_output_signals),已排队的数据触发不回头——反馈跨轮语义。
+        front=False(宿主注入):按注入序入队队尾。
+        """
+        if self.control_in_levels[(nid, port)] == lvl:
+            return
+        self.control_in_levels[(nid, port)] = lvl
+        self._note(Mark(kind=K_CTRL, port=port, src=src, src_port=src_port,
+                        src_slot="ctrl"), nid)
+        self._enqueue(nid, front=front)
+
+    def _invalidate(self, nid: str, port: str, *, src: str | None = None,
+                    src_port: str | None = None) -> None:
+        """信号推导失效:上游输出信号变化 / 子图边界强制关闭——唤醒重推导
+        (队尾:信号关闭沿推导链惰性传播,已排队的数据触发不回头)。"""
+        self._note(Mark(kind=K_SIGNAL, port=port, src=src, src_port=src_port,
+                        src_slot="signal"), nid)
+        self._enqueue(nid)
+
+    def _turn(self, nid: str) -> NodeTurn:
+        """本轮该节点的执行预算记录(惰性创建)。"""
+        return self._turns.setdefault(nid, NodeTurn())
+
+    def _node_turn(self, nid: str, marks: set[Mark] | frozenset[Mark]) -> None:
+        """节点访问一次(投递/播种唤醒;marks = 本轮累积的脏标记,即为什么访问):
+        初始化 → 门控 → 冷却 → 源 step → 组 → 信号。执行机会按 turn 预算扣减。"""
         nt = self.compiled.types[nid]
         st = self._states[nid]
-        fired = False
+        turn = self._turn(nid)
         # 1) 初始化(__init__):完成前方法组不执行
         if not st.initialized:
             if not self._try_init(nid):
-                self._update_output_signals(nid)
-                return False
+                self._signals(nid)
+                return
         # 2) 门控 / 熔断冷却:不执行,输出信号按传导关闭
         if not self._enabled(nid):
-            self._update_output_signals(nid)
-            return False
+            self._signals(nid)
+            return
         if st.circuit_open:
-            if nid not in self._cooled:
-                self._cooled.add(nid)
-                st.circuit_cool -= 1  # 熔断冷却每轮只减一次(多遍扫描不加速)
+            if not turn.cooled:
+                turn.cooled = True
+                st.circuit_cool -= 1  # 熔断冷却每轮只减一次(重复访问不加速)
             if st.circuit_cool > 0:
-                self._update_output_signals(nid)
-                return False
+                self._signals(nid)
+                return
             # 冷却归零:半开,尝试执行一次(成功复位,失败重新熔断)
-        # 3) 源节点:每轮发射一次(多遍扫描不重复发射);实时模式按自身
-        #    发射规则到期执行(None 调度 = 每轮发射;发射后重查下一时刻)
-        if nt.is_source() and nid not in self._stepped:
-            self._stepped.add(nid)
+        # 3) 源节点:每轮执行一次(重复访问不重复发射);实时模式按自身
+        #    发射规则到期执行(None 调度 = 每轮发射;发射后重查下一时刻);
+        #    纯信号源(无组、无数据输入)电平变化后同轮再触发一次——信号
+        #    逻辑收敛不受播种时机延误
+        if nt.is_source() and not turn.stepped:
+            turn.stepped = True
             if self._source_due(nid):
                 self._fire(nid, nt, st, group="step", ports=())
                 self._reschedule(nid)
-                fired = True
+        elif self._is_pure_signal_source(nt) and not turn.refired \
+                and any(m.kind == K_CTRL for m in marks):
+            turn.refired = True
+            self._fire(nid, nt, st, group="step", ports=())
         # 4) 输入组 = 函数调用:端口 = 参数(连线参数参与触发,绑定端口仅作值源,
         #    可选参数不接线/被信号禁用 → 回退配置默认,不阻塞触发);
         #    每组每轮至多一次——数据齐全即触发,反馈环跨轮迭代
         for g in nt.groups:
-            if (nid, g.name) in self._fired_once:
+            if g.name in turn.fired_groups:
                 continue
             dmap = nt.data_in_map()
             wired = [p for p in g.inputs
@@ -394,12 +549,10 @@ class World:
                 continue  # 必需参数被关闭 → 组不执行(输出信号按传导关闭)
             trigger = [p for p in wired if self._input_signal(nid, p) == ACTIVE]
             if all(p in self._impls[nid].fresh for p in trigger):
-                self._fired_once.add((nid, g.name))
+                turn.fired_groups.add(g.name)
                 self._fire(nid, nt, st, group=g.name, ports=tuple(g.inputs))
-                fired = True
-        # 5) 输出信号自动传导重算
-        self._update_output_signals(nid)
-        return fired
+        # 5) 输出信号自动传导重算(每轮至多两次,见 _signals)
+        self._signals(nid)
 
     def _try_init(self, nid: str) -> bool:
         """初始化输入全部就绪 → 执行 __init__ 一次;否则继续等待(方法组不执行)。"""
@@ -428,6 +581,11 @@ class World:
 
     def _fire(self, nid: str, nt: NodeType, st: NodeState, group: str,
               ports: tuple[str, ...]) -> None:
+        # 因果 trace:执行事件(组触发即消费本组输入;step 即源节点发射)
+        self._seq += 1
+        self.trace.append({"run": self.run_no, "seq": self._seq, "kind": "fire",
+                           "dst": nid, "group": group,
+                           "port": None, "src": None, "src_port": None, "src_slot": None})
         # 解析本组输入(关闭的端口旁路,不参与计算)
         data_in: dict[str, Any] = {}
         closed_in: set[str] = set()
@@ -469,7 +627,7 @@ class World:
                                      "message": f"连续 {st.fault_count} 轮异常,熔断"})
                 st.circuit_open = True
                 st.circuit_cool = self.fuse_cool_ticks
-                self._cooled.add(nid)  # 熔断开启当轮不再扣减冷却(多遍扫描不加速)
+                self._turn(nid).cooled = True  # 熔断开启当轮不再扣减冷却(重复访问不加速)
             return
         st.fault_count = 0
         st.circuit_open = False
@@ -493,7 +651,7 @@ class World:
             for (dn, dp, dslot) in self.compiled.out_edges.get((nid, p, "data"), []):
                 if dslot != "data":
                     continue
-                self._impls[dn].receive(dp, value)
+                self._receive(dn, dp, value, src=nid, src_port=p)
             if decl.global_write is not None:
                 self.globals_[decl.global_write] = value
         # 控制输出(仅信号节点):显式写电平,未写保持;沿信号线投递到下游控制输入
@@ -505,7 +663,7 @@ class World:
                 continue
             for (dn, dp, _dslot) in self.compiled.out_edges.get((nid, c, "signal"), []):
                 if dp in self.compiled.types[dn].control_in_map():
-                    self.control_in_levels[(dn, dp)] = lvl
+                    self._set_ctrl(dn, dp, lvl, src=nid, src_port=c)
 
     # ------------------------------------------------------------------
     # 信号
@@ -515,6 +673,20 @@ class World:
         nt = self.compiled.types[nid]
         return all(self.control_in_levels[(nid, c.name)] == ACTIVE
                    for c in nt.control_in if c.semantic == "enable")
+
+    @staticmethod
+    def _is_pure_signal_source(nt: NodeType) -> bool:
+        """纯信号源:无数据输入的隐式代码源节点(Latch/AND/NOT/OR)——电平
+        函数,控制电平变化后同轮再触发一次(NodeTurn.refired 上限),收敛
+        不受播种时机延误。子图节点有内部世界,不按电平函数对待。"""
+        return nt.is_source() and not nt.auto and not nt.data_in \
+            and nt.impl.kind == "code"
+
+    @staticmethod
+    def _is_pull_source(nt: NodeType) -> bool:
+        """拉取型源节点:无组、有数据输入(全局/常量读取者)——每轮执行一次,
+        尾播种(因果传播完成后)以保证同轮读到最新全局写入。"""
+        return nt.is_source() and not nt.auto and bool(nt.data_in)
 
     def _input_signal(self, nid: str, port: str) -> str:
         """输入信号:子图边界强制关闭 → 显式信号线(为准)→ 上游输出信号传导 → 默认带电。
@@ -536,12 +708,25 @@ class World:
             return self.output_signals.get((src, sport), ACTIVE)
         return ACTIVE
 
+    def _signals(self, nid: str) -> None:
+        """输出信号重算:每节点每轮至多两次——首次访问重算 + 一次晚到变化
+        (门控/电平/上游信号在首次重算后到达)的补算;信号环内电平反复翻转
+        被上限截断,传播终止(无环因果链两次重算内收敛)。"""
+        turn = self._turn(nid)
+        if turn.signal_runs >= 2:
+            return
+        turn.signal_runs += 1
+        self._update_output_signals(nid)
+
     def _update_output_signals(self, nid: str) -> None:
         """数据输出信号:电平只由自动传导决定(对应输入组全关 → 输出关闭;门控/熔断 →
-        全关),同时沿显式信号线投递到下游信号接收端(控制输入存电平,数据输入按需
-        推导)。"""
+        全关)。仅电平变化的端口才投递:信号槽 + 控制输入存电平(暂停期挂起);
+        其余目标(数据槽、信号槽数据输入)唤醒重推导——输入信号按需从本表推导,
+        上游变化必须显式通知下游(全图扫描靠多遍被动覆盖,传播必须显式唤醒)。"""
         nt = self.compiled.types[nid]
         st = self._states[nid]
+        old = {p.name: self.output_signals.get((nid, p.name), ACTIVE)
+               for p in nt.data_out}
         gated = (not self._enabled(nid)) or st.circuit_open
         for g in nt.groups:
             all_closed = bool(g.inputs) and all(
@@ -559,16 +744,20 @@ class World:
                     target = nt.impl.port_map.get(p.name)
                     if target is not None and st.inner.output_signals.get(target) == INACTIVE:
                         self.output_signals[(nid, p.name)] = INACTIVE
-        # 显式信号线投递:数据输出的信号端口 → 下游控制输入(存电平);
+        # 变化投递:显式信号线(数据输出的信号端口 → 下游控制输入,存电平);
         # 数据输入信号目标不存电平,_input_signal 按需从本表推导。
         for p in nt.data_out:
             lvl = self.output_signals.get((nid, p.name), ACTIVE)
+            if lvl == old.get(p.name):
+                continue  # 电平未变:下游推导结果不变,无需唤醒
             for (dn, dp, dslot) in self.compiled.out_edges.get((nid, p.name, "data"), []):
                 if dslot == "signal" and dp in self.compiled.types[dn].control_in_map():
                     if self._paused:  # 传播闸门:电平挂起
                         self._pending_signal[(nid, p.name)] = lvl
                     else:
-                        self.control_in_levels[(dn, dp)] = lvl
+                        self._set_ctrl(dn, dp, lvl, src=nid, src_port=p.name)  # 插队:门控即时结算
+                else:
+                    self._invalidate(dn, dp, src=nid, src_port=p.name)  # 队尾:惰性传播
 
     # ------------------------------------------------------------------
     # 输入解析
