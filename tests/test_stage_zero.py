@@ -78,7 +78,7 @@ def test_1_deterministic_replay():
     # 快照逐字段全等:状态、缓冲、信号、全局、RNG、日志
     assert w1.snapshot().to_dict() == w2.snapshot().to_dict()
 
-    # 声明序即执行序:同一拓扑,顺序不同结果可以不同(程序语义)
+    # 数据流同轮收敛:声明序不延误前向传播——无论谁在前,counter 同轮拿到值
     nodes = [NodeInstance("counter", "Counter"), NodeInstance("clock", "Clock")]
     wires = [Wire("clock", "count", "counter", "increment")]
     g_clock_first = Graph(name="order-a", nodes=list(reversed(nodes)), wires=wires)
@@ -87,9 +87,8 @@ def test_1_deterministic_replay():
     wb = World(lib, g_counter_first, registry, seed=0)
     wa.run()
     wb.run()
-    # clock 在前:同一轮 counter 就拿到 1 并计数;counter 在前:下一轮才拿到
     assert wa._states["counter"].state["count"] == 1
-    assert wb._states["counter"].state["count"] == 0
+    assert wb._states["counter"].state["count"] == 1  # 声明序不影响收敛结果
 
     # 每节点独立随机流:加一个 Random 节点不扰动已有节点的随机轨迹
     g_extra = make_loop(lib, "loop-extra")
@@ -175,11 +174,9 @@ def test_4_graph_edit_migrates_running_state():
     assert res.ok
     assert ("threshold", "value") in res.migration_plan.rewarmed
     assert "value" not in w._impls["threshold"].buffers  # 旧来源缓冲清除
-    frozen = w._states["printer"].state["last_msg"]
-    w.run()  # clock2 声明在 threshold 之后:本轮 threshold 未见到新值,下游冻结
-    assert w._states["printer"].state["last_msg"] == frozen
-    w.run()  # 新来源到达 → 重新执行
-    assert "value" in w._impls["threshold"].buffers
+    w.run()  # 数据流同轮收敛:clock2 的新值同轮到达 threshold 并级联执行
+    assert ("threshold", "over") in w.run_outputs
+    assert ("printer", "echo") in w.run_outputs  # 级联到 printer(同轮完成)
 
     # 非法编辑(裸数据输入)校验失败:世界零变更
     class BrokenImpl(NodeImpl):
@@ -405,13 +402,13 @@ def test_extra_init_input():
               Wire("b", "count", "n", "x")])
     w_late = World(lib, graph_late, registry, seed=0)
     assert w_late._states["n"].initialized is False
-    w_late.run()  # 首轮:n 在 a/b 之前,cfg 未到 → init 未就绪,work 组不执行
-    assert w_late._states["n"].initialized is False
-    assert ("n", "out") not in w_late.run_outputs
-    w_late.run()  # 次轮:cfg 已到 → init 执行 → work 组 x 新鲜 → 执行
+    w_late.run()  # 数据流同轮收敛:cfg 到达后同轮完成 init 并触发 work
+    assert w_late._states["n"].initialized is True
+    assert ("n", "out") in w_late.run_outputs
+    w_late.run()  # 次轮:新 x=2 再次触发 work(init 只执行一次,total 不变)
     assert w_late._states["n"].initialized is True
     assert w_late._states["n"].state["total"] == 2  # cfg=1 → total=2
-    assert w_late.run_outputs[("n", "out")] == 3  # total + x(1)
+    assert w_late.run_outputs[("n", "out")] == 4  # total + x(2)
 
     # 来源声明在前:init 与 work 同轮完成
     graph_early = Graph(name="init-early", nodes=[
@@ -696,11 +693,11 @@ def test_extra_data_out_signal_wire_masks_data_in():
         w2.run()
     # run3 后:threshold 翻转 under=inactive → clock 门控 → count 信号关闭;
     # w1 的 printer.msg 信号以显式线为准 → 断电 → 组不执行,last_msg 停在 1;
-    # w2 无显式线 → 自动传导(clock2 永不关闭)→ 照常打印 2。
-    # (printer 声明在 clock2 之前:单遍语义下看到的是上一轮缓冲,故差一拍)
+    # w2 无显式线 → 自动传导(clock2 永不关闭)→ 照常打印到 3。
+    # (数据流同轮收敛:clock2 的投递在同一次 run 内到达 printer)
     assert w1.control_in_levels[("clock", "enable")] == INACTIVE
     assert w1._states["printer"].state["last_msg"] == 1
-    assert w2._states["printer"].state["last_msg"] == 2
+    assert w2._states["printer"].state["last_msg"] == 3
 
 
 # ---------------------------------------------------------------------------
@@ -846,6 +843,21 @@ def test_extra_join_multi_input():
     assert w2._states["printer"].state["last_msg"] == "2|x"
     w2.run([Event("i1", "in", 3)])  # a=3 到达:再次触发
     assert w2._states["printer"].state["last_msg"] == "3|y"
+
+    # 数据齐全即输出:Join 声明在输入源之前——b 到达的同一次 run 内自动输出,
+    # 不多等一轮(数据流同轮收敛,声明序不延误)
+    g3 = Graph(name="join3", nodes=[NodeInstance("j1", "Join"),
+                                    NodeInstance("i1", "Input"),
+                                    NodeInstance("i2", "Input"),
+                                    NodeInstance("printer", "Printer")],
+               wires=[Wire("i1", "out", "j1", "a"),
+                      Wire("i2", "out", "j1", "b"),
+                      Wire("j1", "out", "printer", "msg")])
+    w3 = World(lib, g3, registry, seed=0)
+    w3.run([Event("i1", "in", "甲")])  # 只有 a:等待
+    assert w3._states["printer"].state["last_msg"] is None
+    w3.run([Event("i2", "in", "乙")])  # b 到达:同轮输出
+    assert w3._states["printer"].state["last_msg"] == "甲|乙"
 
 
 def test_extra_buffer_consumed_after_fire():

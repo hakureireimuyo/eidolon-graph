@@ -132,6 +132,9 @@ class World:
         self.control_in_levels: dict[tuple[str, str], str] = {}
         self.control_out_levels: dict[tuple[str, str], str] = {}
         self.run_outputs: dict[tuple[str, str], Any] = {}   # 本次运行各输出端口的产出
+        self._stepped: set[str] = set()                # 本轮已发射的源节点(每轮一次)
+        self._fired_once: set[tuple[str, str]] = set()  # 本轮已触发的组(每组每轮至多一次)
+        self._cooled: set[str] = set()                 # 本轮已扣减熔断冷却的节点(每轮一次)
         self.forced_inactive: set[tuple[str, str]] = set()  # 子图边界注入的关闭
         self.log: list[dict] = []  # 事件日志:只追加、可截断
         self.fuse_limit = fuse_limit
@@ -187,18 +190,28 @@ class World:
     # ------------------------------------------------------------------
 
     def run(self, events: list[Event] | None = None) -> None:
-        """注入事件 → 按节点声明序单遍执行 → 静止。原子操作。
+        """注入事件 → 数据流同轮收敛 → 静止。原子操作。
 
+        多遍扫描:每遍按声明序执行,一遍无任何触发即静止。每组每轮至多
+        一次(新输入到达即触发,触发即消费)——数据齐全即输出,不受声明
+        顺序延误;反馈环因每组每轮一次而跨轮迭代。
         同步模式:宿主调用;实时模式:由调度线程按源节点发射时刻调用。
         """
         with self._lock:
             self.run_no += 1
             self.run_outputs = {}
+            self._stepped = set()
+            self._fired_once = set()
+            self._cooled = set()
             if events:
                 for ev in events:
                     self._deliver(ev)
-            for ni in self.graph.nodes:
-                self._node_turn(ni.node_id)
+            while True:
+                fired_any = False
+                for ni in self.graph.nodes:
+                    fired_any = self._node_turn(ni.node_id) or fired_any
+                if not fired_any:
+                    break
 
     # ------------------------------------------------------------------
     # 实时调度(事件源 = 节点自身,引擎不硬编码节奏)
@@ -334,33 +347,42 @@ class World:
         else:
             self.control_in_levels[(ev.node, ev.port)] = ev.value
 
-    def _node_turn(self, nid: str) -> None:
+    def _node_turn(self, nid: str) -> bool:
+        """节点转一圈:返回本轮是否触发了发射(驱动多遍扫描至静止)。"""
         nt = self.compiled.types[nid]
         st = self._states[nid]
+        fired = False
         # 1) 初始化(__init__):完成前方法组不执行
         if not st.initialized:
             if not self._try_init(nid):
                 self._update_output_signals(nid)
-                return
+                return False
         # 2) 门控 / 熔断冷却:不执行,输出信号按传导关闭
         if not self._enabled(nid):
             self._update_output_signals(nid)
-            return
+            return False
         if st.circuit_open:
-            st.circuit_cool -= 1
+            if nid not in self._cooled:
+                self._cooled.add(nid)
+                st.circuit_cool -= 1  # 熔断冷却每轮只减一次(多遍扫描不加速)
             if st.circuit_cool > 0:
                 self._update_output_signals(nid)
-                return
+                return False
             # 冷却归零:半开,尝试执行一次(成功复位,失败重新熔断)
-        # 3) 源节点:同步模式每轮执行;实时模式按自身发射规则到期执行
-        #    (None 调度 = 每轮发射;发射后按最新状态重查下一时刻)
-        if nt.is_source():
+        # 3) 源节点:每轮发射一次(多遍扫描不重复发射);实时模式按自身
+        #    发射规则到期执行(None 调度 = 每轮发射;发射后重查下一时刻)
+        if nt.is_source() and nid not in self._stepped:
+            self._stepped.add(nid)
             if self._source_due(nid):
                 self._fire(nid, nt, st, group="step", ports=())
                 self._reschedule(nid)
+                fired = True
         # 4) 输入组 = 函数调用:端口 = 参数(连线参数参与触发,绑定端口仅作值源,
-        #    可选参数不接线/被信号禁用 → 回退配置默认,不阻塞触发)
+        #    可选参数不接线/被信号禁用 → 回退配置默认,不阻塞触发);
+        #    每组每轮至多一次——数据齐全即触发,反馈环跨轮迭代
         for g in nt.groups:
+            if (nid, g.name) in self._fired_once:
+                continue
             dmap = nt.data_in_map()
             wired = [p for p in g.inputs
                      if not dmap[p].is_bound()
@@ -372,9 +394,12 @@ class World:
                 continue  # 必需参数被关闭 → 组不执行(输出信号按传导关闭)
             trigger = [p for p in wired if self._input_signal(nid, p) == ACTIVE]
             if all(p in self._impls[nid].fresh for p in trigger):
+                self._fired_once.add((nid, g.name))
                 self._fire(nid, nt, st, group=g.name, ports=tuple(g.inputs))
+                fired = True
         # 5) 输出信号自动传导重算
         self._update_output_signals(nid)
+        return fired
 
     def _try_init(self, nid: str) -> bool:
         """初始化输入全部就绪 → 执行 __init__ 一次;否则继续等待(方法组不执行)。"""
@@ -444,6 +469,7 @@ class World:
                                      "message": f"连续 {st.fault_count} 轮异常,熔断"})
                 st.circuit_open = True
                 st.circuit_cool = self.fuse_cool_ticks
+                self._cooled.add(nid)  # 熔断开启当轮不再扣减冷却(多遍扫描不加速)
             return
         st.fault_count = 0
         st.circuit_open = False
