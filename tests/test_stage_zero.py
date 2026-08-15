@@ -768,24 +768,26 @@ def test_extra_realtime_pause_resume():
     w.stop()
 
 
-def test_extra_random_seed_range():
-    """Random = 确定性随机数:种子 + 范围 → 一个数字;输入变化才产出,同种子同范围恒等。"""
-    from eidolon_graph.engine import Rng
+# ---------------------------------------------------------------------------
+# 补充:Random 随机函数(数字+种子+范围 → 确定性随机数)
+# ---------------------------------------------------------------------------
+
+def test_extra_random_function():
+    """Random 是随机函数:自身不独立输出;同输入恒等;信号禁用端口回退配置。"""
+    from eidolon_graph.engine import Rng, derive_seed
     lib, registry = make_env()
-    g = Graph(name="rnd", nodes=[NodeInstance("r1", "Random", {"range": 10}),
+    g = Graph(name="rnd", nodes=[NodeInstance("r1", "Random", {"seed": 7, "range": 10}),
                                  NodeInstance("printer", "Printer")],
               wires=[Wire("r1", "draw", "printer", "msg")])
     w = World(lib, g, registry, seed=0)
-    w.run()
-    draw1 = w._states["printer"].state["last_msg"]
-    assert draw1 == Rng(0).next_int(10)  # 默认种子 0,确定性可复现
-    w.run()  # 种子未变:不产出
-    assert w._states["printer"].state["last_msg"] == draw1
-    # 注入新种子 → 新值(同种子恒等)
-    w.run([Event("r1", "seed", 7)])
-    assert w._states["printer"].state["last_msg"] == Rng(7).next_int(10)
-    # 种子往返:0 → 7 各次输出与首次相同(纯函数)
-    w.run([Event("r1", "seed", 0)])
-    assert w._states["printer"].state["last_msg"] == draw1
-    w.run([Event("r1", "seed", 7)])
-    assert w._states["printer"].state["last_msg"] == Rng(7).next_int(10)
+    w.run()  # 无数字输入:自身不独立输出
+    assert w._states["printer"].state["last_msg"] is None
+    w.run([Event("r1", "num", 1)])  # 注入数字 → 输出 f(seed=7, num=1, range=10)
+    assert w._states["printer"].state["last_msg"] == Rng(derive_seed(7, "1")).next_int(10)
+    w.run([Event("r1", "num", 1)])  # 输入组合未变:不重复产出
+    assert w._states["printer"].state["last_msg"] == Rng(derive_seed(7, "1")).next_int(10)
+    w.run([Event("r1", "num", 2)])  # 新数字 → 新随机数(可复现)
+    assert w._states["printer"].state["last_msg"] == Rng(derive_seed(7, "2")).next_int(10)
+    # 接线覆盖配置默认:seed 端口注入 3 → 使用接线值
+    w.run([Event("r1", "seed", 3), Event("r1", "num", 5)])
+    assert w._states["printer"].state["last_msg"] == Rng(derive_seed(3, "5")).next_int(10)
