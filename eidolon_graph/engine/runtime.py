@@ -112,6 +112,8 @@ class World:
         self._lock = threading.Lock()
         self._sched_thread: threading.Thread | None = None
         self._sched_stop = threading.Event()
+        self._paused = False
+        self._pause_start = 0.0
         # 源节点下次发射时刻(monotonic 秒);0.0 = 永远到期(每轮发射 / 首轮立即)
         self._next_due: dict[str, float] = {}
         # 每节点独立随机流(世界种子 + 节点 id 派生):加节点不改他人轨迹
@@ -204,7 +206,7 @@ class World:
         """
         if not self._realtime:
             raise RuntimeError("实时调度仅在 realtime=True 的世界可用")
-        if self._sched_thread is not None:
+        if self._sched_thread is not None or self._paused:
             return
         with self._lock:
             for ni in self.graph.nodes:
@@ -216,10 +218,31 @@ class World:
                                       config=nt.resolve_config(self._node_map[nid].config))
                 if self._impls[nid].schedule(ctx) is not None:
                     self._next_due[nid] = 0.0  # 首轮立即到期
-        self._sched_stop.clear()
-        self._sched_thread = threading.Thread(target=self._sched_loop,
-                                              name="eidolon-graph-sched", daemon=True)
-        self._sched_thread.start()
+        self._spawn_sched()
+
+    def pause(self) -> None:
+        """暂停实时运行:调度线程退出,世界冻结(状态/信号/RNG 保留)。
+
+        暂停期间注入(run(events))与快照仍可用;恢复时暂停时长不计入
+        发射周期(到期时刻顺延)。
+        """
+        self._sched_stop.set()
+        if self._sched_thread is not None:
+            self._sched_thread.join(timeout=2)
+            self._sched_thread = None
+        if not self._paused:
+            self._paused = True
+            self._pause_start = time.monotonic()
+
+    def resume(self) -> None:
+        """恢复实时运行:发射时刻顺延暂停时长后重新调度。"""
+        if not self._paused:
+            return
+        self._paused = False
+        with self._lock:
+            shift = time.monotonic() - self._pause_start
+            self._next_due = {n: t + shift for n, t in self._next_due.items()}
+        self._spawn_sched()
 
     def stop(self) -> None:
         """停止实时运行:调度线程退出,世界静止(快照/编辑安全)。"""
@@ -227,6 +250,12 @@ class World:
         if self._sched_thread is not None:
             self._sched_thread.join(timeout=2)
             self._sched_thread = None
+
+    def _spawn_sched(self) -> None:
+        self._sched_stop.clear()
+        self._sched_thread = threading.Thread(target=self._sched_loop,
+                                              name="eidolon-graph-sched", daemon=True)
+        self._sched_thread.start()
 
     def _sched_loop(self) -> None:
         """调度循环:等到任一源节点发射时刻 → 单遍执行(执行中重查各源下一时刻)。"""

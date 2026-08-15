@@ -739,3 +739,31 @@ def test_extra_realtime_schedule():
     w2 = World(lib, g, registry, seed=0)
     w2.run()
     assert w2._states["clock"].state["count"] == 1
+
+
+def test_extra_realtime_pause_resume():
+    """实时暂停/恢复:暂停期间世界冻结(无发射);恢复后顺延继续;注入在暂停期仍可用。"""
+    import time as _time
+    lib, registry = make_env()
+    g = Graph(name="rt-pause", nodes=[NodeInstance("clock", "Clock"),
+                                      NodeInstance("counter", "Counter")],
+              wires=[Wire("clock", "count", "counter", "increment")])
+    w = World(lib, g, registry, seed=0, realtime=True)
+    w.start()
+    deadline = _time.monotonic() + 3.0
+    while w.run_no < 1 and _time.monotonic() < deadline:
+        _time.sleep(0.05)
+    assert w.run_no >= 1
+    w.pause()
+    rn = w.run_no
+    _time.sleep(1.1)  # 暂停期间世界冻结
+    assert w.run_no == rn
+    # 暂停期间注入仍可用:事件驱动不在乎事件从哪来
+    w.run([Event("clock", "rate", 2, kind="data")])
+    assert w.run_no == rn + 1
+    w.resume()
+    deadline = _time.monotonic() + 3.0
+    while w.run_no <= rn + 1 and _time.monotonic() < deadline:
+        _time.sleep(0.05)
+    assert w.run_no > rn + 1  # 恢复后继续发射
+    w.stop()
