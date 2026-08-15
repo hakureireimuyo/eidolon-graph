@@ -623,3 +623,79 @@ def test_extra_json_roundtrip():
     w.run()
     w2.run()
     assert w.snapshot().to_dict() == w2.snapshot().to_dict()
+
+
+# ---------------------------------------------------------------------------
+# 补充:数据输出信号端口显式拉线(电平由自动传导决定,拉线只是显式路由)
+# ---------------------------------------------------------------------------
+
+def test_extra_data_out_signal_wire_validate():
+    """数据输出信号端口可连任意信号接收端;数据槽连控制输入仍报交叉连线。"""
+    lib, _ = make_env()
+    nodes = [NodeInstance("clock", "Clock"), NodeInstance("sw", "Switch"),
+             NodeInstance("and1", "AND"), NodeInstance("printer", "Printer")]
+    wires = [
+        Wire("clock", "count", "sw", "value"),
+        # 组端口必须连线(数据线),信号槽与之并存(扇入按槽位区分)
+        Wire("sw", "selected", "printer", "msg"),
+        Wire("sw", "selected", "and1", "a", dst_slot="signal"),   # 数据输出信号 → 控制输入
+        Wire("sw", "selected", "printer", "msg", dst_slot="signal"),  # 数据输出信号 → 数据输入信号
+    ]
+    g = Graph(name="signal-wire-ok", nodes=nodes, wires=wires)
+    assert validate(lib, g).ok
+    # 数据槽连控制输入:仍交叉连线
+    bad = Graph(name="bad", nodes=nodes,
+                wires=[Wire("clock", "count", "and1", "a")])  # 缺省 dst_slot='data'
+    rep = validate(lib, bad)
+    assert not rep.ok and any("交叉连线" in e for e in rep.errors)
+
+
+def test_extra_data_out_signal_wire_to_control_in():
+    """数据输出信号电平(自动传导)沿显式信号线投递到控制输入。"""
+    lib, registry = make_env()
+    g = Graph(name="route", nodes=[NodeInstance("clock", "Clock"),
+                                   NodeInstance("latch", "Latch"),
+                                   NodeInstance("sw", "Switch"),
+                                   NodeInstance("and1", "AND")],
+              wires=[
+                  Wire("clock", "count", "sw", "value"),
+                  Wire("latch", "q", "sw", "enable", dst_slot="signal"),
+                  Wire("sw", "selected", "and1", "a", dst_slot="signal"),
+              ])
+    w = World(lib, g, registry, seed=0)
+    w.run()  # latch.q 默认 inactive → sw 被门控 → selected 输出信号关闭 → AND.a 关闭
+    assert w.control_in_levels[("and1", "a")] == INACTIVE
+    # 置位 latch:sw 复电,selected 输出信号恢复 active → 沿信号线投递 AND.a
+    w.run([Event("latch", "set", ACTIVE, kind="control")])
+    assert w.control_in_levels[("and1", "a")] == ACTIVE
+
+
+def test_extra_data_out_signal_wire_masks_data_in():
+    """数据输出信号 → 数据输入信号槽:显式信号线为准,覆盖沿数据线的自动传导。"""
+    lib, registry = make_env()
+    nodes = [NodeInstance("clock", "Clock"), NodeInstance("counter", "Counter"),
+             NodeInstance("threshold", "Threshold", {"limit": 2}),
+             NodeInstance("printer", "Printer"), NodeInstance("clock2", "Clock")]
+    wires = [
+        Wire("clock", "count", "counter", "increment"),
+        Wire("counter", "count", "threshold", "value"),
+        Wire("threshold", "under", "clock", "enable", dst_slot="signal"),
+        Wire("clock2", "count", "printer", "msg"),
+        # 显式信号线:clock.count 的信号端口 → printer.msg 信号槽(门控关闭后显式断电)
+        Wire("clock", "count", "printer", "msg", dst_slot="signal"),
+    ]
+    g_masked = Graph(name="masked", nodes=nodes, wires=wires)
+    w1 = World(lib, g_masked, registry, seed=0)
+    # 对照:无显式信号线 → msg 信号沿数据线自动传导(clock2 永不关闭)
+    g_plain = Graph(name="plain", nodes=nodes, wires=wires[:4])
+    w2 = World(lib, g_plain, registry, seed=0)
+    for _ in range(3):
+        w1.run()
+        w2.run()
+    # run3 后:threshold 翻转 under=inactive → clock 门控 → count 信号关闭;
+    # w1 的 printer.msg 信号以显式线为准 → 断电 → 组不执行,last_msg 停在 1;
+    # w2 无显式线 → 自动传导(clock2 永不关闭)→ 照常打印 2。
+    # (printer 声明在 clock2 之前:单遍语义下看到的是上一轮缓冲,故差一拍)
+    assert w1.control_in_levels[("clock", "enable")] == INACTIVE
+    assert w1._states["printer"].state["last_msg"] == 1
+    assert w2._states["printer"].state["last_msg"] == 2

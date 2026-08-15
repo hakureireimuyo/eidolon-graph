@@ -4,8 +4,9 @@
 - 宿主注入输入事件(数据→缓冲,控制→电平),引擎按声明序单遍执行;
 - 节点 = 类实例:初始化输入 = __init__,输入组 = 方法(组内全部有效输入有新值
   即执行、消费清零),源节点每轮运行执行一次;
-- 端口信号:输入信号 = 显式信号线(为准)或上游输出信号传导;数据节点输出信号
-  只有一条自动传导(对应输入组全关 → 输出关闭),信号逻辑只在信号节点内;
+- 端口信号:输入信号 = 显式信号线(为准)或上游输出信号传导;数据输出信号电平
+  只由自动传导决定(对应输入组全关 → 输出关闭,实现永不写信号),但信号端口可
+  显式拉线到任意信号接收端(显式路由);信号逻辑只在信号节点内;
 - 每节点独立随机流(世界种子 + 节点 id 派生),声明序即执行序,同一图同一输入
   序列结果唯一。
 """
@@ -293,10 +294,13 @@ class World:
         for p in ports:
             st.fresh.discard(p)
         # 数据输出:记录本轮产出 + 沿连线投递 + 全局写入
+        # (信号线目标不投递数据值——下游输入信号按需推导 / 电平存储)
         for p, value in out.data_out.items():
             self.run_outputs[(nid, p)] = value
             decl = nt.data_out_map()[p]
-            for (dn, dp, _dslot) in self.compiled.out_edges.get((nid, p, "data"), []):
+            for (dn, dp, dslot) in self.compiled.out_edges.get((nid, p, "data"), []):
+                if dslot != "data":
+                    continue
                 dst = self._states[dn]
                 dst.buffers[dp] = value
                 dst.fresh.add(dp)
@@ -320,13 +324,19 @@ class World:
                    for c in nt.control_in if c.semantic == "enable")
 
     def _input_signal(self, nid: str, port: str) -> str:
-        """输入信号:子图边界强制关闭 → 显式信号线(为准)→ 上游输出信号传导 → 默认带电。"""
+        """输入信号:子图边界强制关闭 → 显式信号线(为准)→ 上游输出信号传导 → 默认带电。
+
+        显式信号线来源 = 控制输出(读控制电平)或数据输出的信号端口(读输出信号,
+        电平由自动传导决定)。
+        """
         if (nid, port) in self.forced_inactive:
             return INACTIVE
         edge = self.compiled.in_edge.get((nid, port, "signal"))
         if edge is not None:
-            src, sport, _ = edge
-            return self.control_out_levels.get((src, sport), INACTIVE)
+            src, sport, src_kind = edge
+            if src_kind == "signal":
+                return self.control_out_levels.get((src, sport), INACTIVE)
+            return self.output_signals.get((src, sport), ACTIVE)
         edge = self.compiled.in_edge.get((nid, port, "data"))
         if edge is not None:
             src, sport, _ = edge
@@ -334,7 +344,9 @@ class World:
         return ACTIVE
 
     def _update_output_signals(self, nid: str) -> None:
-        """数据节点输出信号的唯一自动传导:对应输入组全关 → 输出关闭;门控/熔断 → 全关。"""
+        """数据输出信号:电平只由自动传导决定(对应输入组全关 → 输出关闭;门控/熔断 →
+        全关),同时沿显式信号线投递到下游信号接收端(控制输入存电平,数据输入按需
+        推导)。"""
         nt = self.compiled.types[nid]
         st = self._states[nid]
         gated = (not self._enabled(nid)) or st.circuit_open
@@ -354,6 +366,13 @@ class World:
                     target = nt.impl.port_map.get(p.name)
                     if target is not None and st.inner.output_signals.get(target) == INACTIVE:
                         self.output_signals[(nid, p.name)] = INACTIVE
+        # 显式信号线投递:数据输出的信号端口 → 下游控制输入(存电平);
+        # 数据输入信号目标不存电平,_input_signal 按需从本表推导。
+        for p in nt.data_out:
+            lvl = self.output_signals.get((nid, p.name), ACTIVE)
+            for (dn, dp, dslot) in self.compiled.out_edges.get((nid, p.name, "data"), []):
+                if dslot == "signal" and dp in self.compiled.types[dn].control_in_map():
+                    self.control_in_levels[(dn, dp)] = lvl
 
     # ------------------------------------------------------------------
     # 输入解析

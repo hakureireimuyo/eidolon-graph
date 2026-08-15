@@ -2,7 +2,8 @@
 
 清单(见 docs/graph-persistence-and-editing.md §5):
 1. 端口绑定合法性(裸数据端口报错;可显式声明默认 None);
-2. 连线 kind 匹配:data→data、信号→信号,交叉连线报错;
+2. 连线 kind 匹配:data→data、信号→信号(信号源 = 控制输出或数据输出的信号
+   端口),交叉连线报错;
    唯一例外:控制输出 → 数据端口信号(显式屏蔽)合法;
 3. 扇入禁止:每个输入端口至多一条数据线、至多一条信号线(组合必须显式信号节点);
 4. 引用存在性(未声明的全局变量/常量/服务/图 → 报错);
@@ -291,13 +292,14 @@ def _validate_wires(rep: ValidationReport, lib: AssetLibrary, graph: Graph) -> N
             rep.error(f"连线目标端口 '{w.dst_node}.{w.dst_port}' 不是输入端口")
             continue
         if src_data:
-            # 数据输出 → 数据输入(数据槽)
+            if w.dst_slot == "signal":
+                # 数据输出的信号端口:电平由自动传导决定(实现永不写信号),但可
+                # 显式拉线到任何信号接收端(控制输入 / 数据输入的信号槽)——不改变
+                # 电平,只是显式路由;不拉线则沿数据线自动传导。
+                continue
+            # 数据线(dst_slot='data')→ 数据输入
             if not dst_data:
                 rep.error(f"交叉连线:数据输出 '{w.src_node}.{w.src_port}' 不能连控制输入 '{w.dst_node}.{w.dst_port}'")
-                continue
-            if w.dst_slot != "data":
-                rep.error(f"数据输出 '{w.src_node}.{w.src_port}' 只能连数据槽 "
-                          f"(dst_slot='data'),不能连信号槽")
                 continue
             src_annot = snt.data_out_map()[w.src_port].type_annot
             dst_annot = dnt.data_in_map()[w.dst_port].type_annot
@@ -312,7 +314,7 @@ def _validate_wires(rep: ValidationReport, lib: AssetLibrary, graph: Graph) -> N
                 continue
             if dst_ctrl:
                 continue
-            # 数据端口信号:合法(唯一合法的跨通道连线)
+            # 数据端口信号:合法(跨通道信号连线)
             if not dst_data:
                 rep.error(f"连线目标端口 '{w.dst_node}.{w.dst_port}' 不是输入端口")
 
