@@ -1,10 +1,10 @@
 """执行引擎层。
 
 职责:
-- 同步轮次(tick):轮初读、轮末提交、采样保持;
-- 节点调度与就绪规则(warm-up)、门控/屏蔽拦截、异常与熔断;
-- 编辑事务与状态迁移(改连线→就绪重置、换实现→迁移函数);
-- 世界快照/持久化(节点状态、端口 held 值、全局变量、轮次、RNG)。
+- 运行(run):注入事件 → 按节点声明序单遍执行 → 静止;
+- 节点协议:初始化输入(__init__)、输入组(方法)、信号自动传导、门控/熔断;
+- 编辑事务与状态迁移(改连线→缓冲重置、换实现→迁移函数);
+- 世界快照/持久化(节点状态、输入缓冲、端口信号电平、全局变量、运行序号、每节点 RNG)。
 
 不负责:图模型定义与资产格式 —— 见 eidolon_graph.model。
 """
@@ -12,21 +12,21 @@
 from .edit import (AddEdge, AddNode, ChangeImpl, EditOp, EditResult, MigrationPlan,
                    ReimplementRecord, RemoveEdge, RemoveNode, SetConfig, apply_edits,
                    edit_transaction)
-from .protocol import NodeImpl, TickContext, TickOutput
+from .protocol import InitContext, NodeImpl, TickContext, TickOutput
 from .registry import NodeRegistry
-from .rng import Rng
-from .runtime import CompiledGraph, NodeState, World
-from .signal import ACTIVE, INACTIVE, DataPacket
+from .rng import Rng, derive_seed
+from .runtime import CompiledGraph, Event, NodeState, World
+from .signal import ACTIVE, INACTIVE
 from .snapshot import NodeSnapshot, Snapshot, capture, restore_world
 from .subgraph import SubgraphNodeImpl
 from . import builtins
 
 __all__ = [
-    "ACTIVE", "INACTIVE", "DataPacket",
-    "Rng",
-    "NodeImpl", "TickContext", "TickOutput",
+    "ACTIVE", "INACTIVE",
+    "Rng", "derive_seed",
+    "NodeImpl", "TickContext", "TickOutput", "InitContext",
     "NodeRegistry",
-    "CompiledGraph", "NodeState", "World",
+    "CompiledGraph", "NodeState", "World", "Event",
     "NodeSnapshot", "Snapshot", "capture", "restore_world",
     "AddNode", "RemoveNode", "AddEdge", "RemoveEdge", "SetConfig", "ChangeImpl",
     "EditOp", "MigrationPlan", "ReimplementRecord", "EditResult",

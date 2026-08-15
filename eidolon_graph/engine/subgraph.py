@@ -1,15 +1,16 @@
-"""子图节点:对上层是普通 NodeImpl,内部是另一张图 + 独立轮次空间。
+"""子图节点:对上层是普通 NodeImpl,内部是另一张图 + 独立运行空间。
 
-父 tick 内:注入外部输入 → 内部 world.tick() → 收集外部输出。嵌套深度不限;
-内部 held/轮次独立,RNG 与父世界共享(同一世界一个随机源)。内部图资产同样在
-构造时被运行时校验一遍。
+外层组执行时:注入外部输入 → 内部 world.run() → 收集内部本轮产出。嵌套深度
+不限;内部缓冲/运行计数独立,随机流按 (世界种子, 实例, 图名) 派生。
+信号跨边界一一传导:外部输入信号关闭 → 内部对应端口强制关闭;内部输出信号
+关闭 → 外部输出信号关闭(经运行时传导计算)。
 """
 
 from __future__ import annotations
 
 from ..model import NodeType
 from .protocol import NodeImpl, TickContext, TickOutput
-from .signal import DataPacket, INACTIVE
+from .signal import INACTIVE
 
 
 class SubgraphNodeImpl(NodeImpl):
@@ -25,40 +26,36 @@ class SubgraphNodeImpl(NodeImpl):
         pm = self.outer.impl.port_map
         out = TickOutput()
 
-        # 1) 注入:外部输入 → 内部端口 held(被屏蔽的外部输入不注入,旁路语义)
-        for p in self.outer.data_in:
-            target = pm.get(p.name)
-            if target is None or p.name in ctx.masked_in:
-                continue
-            node, port = target
-            inner.data_in_held[(node, port)] = DataPacket(
-                payload=ctx.data_in.get(p.name),
-                source=f"{self.outer.name}.{p.name}",
-                tick=ctx.tick,
-            )
-        for c in self.outer.control_in:
-            target = pm.get(c.name)
+        # 1) 注入:外部组输入 → 内部端口缓冲;外部信号关闭 → 内部端口强制关闭(旁路)
+        inner.forced_inactive.clear()
+        for p, value in ctx.data_in.items():
+            target = pm.get(p)
             if target is None:
                 continue
             node, port = target
-            inner.control_in_held[(node, port)] = ctx.control_in.get(c.name, INACTIVE)
+            if p in ctx.closed_in:
+                inner.forced_inactive.add((node, port))
+                continue
+            inner_st = inner._states[node]
+            inner_st.buffers[port] = value
+            inner_st.fresh.add(port)
+        for c, lvl in ctx.control_in.items():
+            target = pm.get(c)
+            if target is not None:
+                node, port = target
+                inner.control_in_levels[(node, port)] = lvl
 
-        # 2) 内部轮次(同步语义:内部节点读自己的轮初 held 值)
-        inner.tick()
+        # 2) 内部单遍运行(同步语义:内部节点读自己的缓冲与信号)
+        inner.run()
 
-        # 3) 收集:内部输出端口 held → 外部输出(每轮必发,内部冷端口发 None)
+        # 3) 收集:内部本轮产出的映射输出 → 外部输出(未产出即不投递)
         for p in self.outer.data_out:
             target = pm.get(p.name)
-            if target is None:
-                out.data_out[p.name] = None
-                continue
-            node, port = target
-            pkt = inner.data_out_held.get((node, port))
-            out.data_out[p.name] = pkt.payload if pkt is not None else None
+            if target is not None and target in inner.run_outputs:
+                out.data_out[p.name] = inner.run_outputs[target]
         for c in self.outer.control_out:
             target = pm.get(c.name)
-            if target is None:
-                continue
-            node, port = target
-            out.control_out[c.name] = inner.control_out_held.get((node, port), INACTIVE)
+            if target is not None:
+                node, port = target
+                out.control_out[c.name] = inner.control_out_levels.get((node, port), INACTIVE)
         return out

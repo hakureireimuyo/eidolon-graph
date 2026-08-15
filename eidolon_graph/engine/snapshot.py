@@ -1,8 +1,8 @@
-"""世界快照:同步轮次的轮界是天然 checkpoint 点——每 tick 结束世界状态确定且自洽。
+"""世界快照:两次运行之间世界静止,是天然 checkpoint 点。
 
-快照 = 图资产版本引用 + 节点状态表 + 端口 held 值表 + 全局变量表 + 轮次计数
-+ RNG 状态(种子/计数器)+ 日志。读档 = 完整恢复运行中状态(含就绪/warm、
-held 值、RNG),世界从断点精确续跑;子图快照递归内嵌。
+快照 = 图资产版本引用 + 节点状态表 + 输入缓冲表(含新鲜标记)+ 端口信号电平表
++ 全局变量表 + 运行序号 + 每节点 RNG 状态(种子/计数器)+ 日志。读档 = 完整恢复
+运行中状态(含缓冲半满、信号电平、RNG),世界从断点精确续跑;子图快照递归内嵌。
 """
 
 from __future__ import annotations
@@ -12,36 +12,43 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..model import KERNEL_VERSION, compatible
-from .signal import DataPacket
+from .rng import Rng
 
 
 @dataclass
 class NodeSnapshot:
-    """单节点快照:状态字段表 + 各端口 held 值 + 熔断器状态 + 内嵌子图快照。"""
+    """单节点快照:状态字段表 + 输入缓冲/新鲜标记 + 信号电平 + 熔断器 + 内嵌子图。"""
 
     state: dict[str, Any]
-    data_in_held: dict[str, dict | None]     # 端口名 → 数据包 dict | None(包存在即 warm)
-    control_in_held: dict[str, str]
-    data_out_held: dict[str, dict | None]
-    control_out_held: dict[str, str]
+    buffers: dict[str, Any]          # 端口 → 最近值(键存在即有值)
+    fresh: list[str]                 # 新鲜端口(触发后清零)
+    control_in_levels: dict[str, str]
+    output_signals: dict[str, str]
+    control_out_levels: dict[str, str]
+    initialized: bool
     fault_count: int
     circuit_open: bool
     circuit_cool: int
-    inner: dict | None = None                # 子图内嵌快照(递归)
+    inner: dict | None = None        # 子图内嵌快照(递归)
 
     def to_dict(self) -> dict:
-        return {"state": self.state, "data_in_held": self.data_in_held,
-                "control_in_held": self.control_in_held, "data_out_held": self.data_out_held,
-                "control_out_held": self.control_out_held, "fault_count": self.fault_count,
-                "circuit_open": self.circuit_open, "circuit_cool": self.circuit_cool,
-                "inner": self.inner}
+        return {"state": self.state, "buffers": self.buffers,
+                "fresh": list(self.fresh),
+                "control_in_levels": self.control_in_levels,
+                "output_signals": self.output_signals,
+                "control_out_levels": self.control_out_levels,
+                "initialized": self.initialized,
+                "fault_count": self.fault_count, "circuit_open": self.circuit_open,
+                "circuit_cool": self.circuit_cool, "inner": self.inner}
 
     @classmethod
     def from_dict(cls, d: dict) -> "NodeSnapshot":
-        return cls(state=dict(d["state"]), data_in_held=dict(d["data_in_held"]),
-                   control_in_held=dict(d["control_in_held"]),
-                   data_out_held=dict(d["data_out_held"]),
-                   control_out_held=dict(d["control_out_held"]),
+        return cls(state=dict(d["state"]), buffers=dict(d["buffers"]),
+                   fresh=list(d.get("fresh", [])),
+                   control_in_levels=dict(d["control_in_levels"]),
+                   output_signals=dict(d["output_signals"]),
+                   control_out_levels=dict(d["control_out_levels"]),
+                   initialized=d.get("initialized", True),
                    fault_count=d["fault_count"], circuit_open=d["circuit_open"],
                    circuit_cool=d["circuit_cool"], inner=d.get("inner"))
 
@@ -53,42 +60,48 @@ class Snapshot:
     kernel_version: str
     graph_name: str
     graph_kernel_version: str  # 图资产版本引用(旧存档继续引用旧资产版本)
-    tick: int
-    rng: dict                 # {seed, counter}
+    run_no: int
+    seed: int
+    rngs: dict[str, dict]      # 节点 id → {seed, counter}(每节点独立流)
     globals_: dict[str, Any]
     nodes: dict[str, NodeSnapshot]
     log: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {"kernel_version": self.kernel_version, "graph_name": self.graph_name,
-                "graph_kernel_version": self.graph_kernel_version, "tick": self.tick,
-                "rng": self.rng, "globals": self.globals_,
+                "graph_kernel_version": self.graph_kernel_version, "run_no": self.run_no,
+                "seed": self.seed, "rngs": dict(self.rngs),
+                "globals": self.globals_,
                 "nodes": {nid: ns.to_dict() for nid, ns in self.nodes.items()},
                 "log": self.log}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Snapshot":
         return cls(kernel_version=d["kernel_version"], graph_name=d["graph_name"],
-                   graph_kernel_version=d["graph_kernel_version"], tick=d["tick"],
-                   rng=dict(d["rng"]), globals_=dict(d["globals"]),
+                   graph_kernel_version=d["graph_kernel_version"], run_no=d["run_no"],
+                   seed=d.get("seed", 0), rngs={k: dict(v) for k, v in d.get("rngs", {}).items()},
+                   globals_=dict(d["globals"]),
                    nodes={nid: NodeSnapshot.from_dict(x) for nid, x in d["nodes"].items()},
                    log=list(d.get("log", [])))
 
 
 def capture(world: Any) -> Snapshot:
-    """在轮界拍快照(宿主保证不在 tick 中途调用)。"""
+    """在两次运行之间拍快照(宿主保证不在 run 中途调用)。"""
     nodes: dict[str, NodeSnapshot] = {}
     for ni in world.graph.nodes:
         nid = ni.node_id
         st = world._states[nid]
         ns = NodeSnapshot(
             state=deepcopy(st.state),
-            data_in_held={port: (pkt.to_dict() if pkt is not None else None)
-                          for (n, port), pkt in world.data_in_held.items() if n == nid},
-            control_in_held={port: lvl for (n, port), lvl in world.control_in_held.items() if n == nid},
-            data_out_held={port: (pkt.to_dict() if pkt is not None else None)
-                           for (n, port), pkt in world.data_out_held.items() if n == nid},
-            control_out_held={port: lvl for (n, port), lvl in world.control_out_held.items() if n == nid},
+            buffers={port: deepcopy(v) for port, v in st.buffers.items()},
+            fresh=sorted(p for p in st.fresh),
+            control_in_levels={port: lvl for (n, port), lvl in world.control_in_levels.items()
+                               if n == nid},
+            output_signals={port: lvl for (n, port), lvl in world.output_signals.items()
+                            if n == nid},
+            control_out_levels={port: lvl for (n, port), lvl in world.control_out_levels.items()
+                                if n == nid},
+            initialized=st.initialized,
             fault_count=st.fault_count,
             circuit_open=st.circuit_open,
             circuit_cool=st.circuit_cool,
@@ -96,9 +109,11 @@ def capture(world: Any) -> Snapshot:
         )
         nodes[nid] = ns
     return Snapshot(kernel_version=KERNEL_VERSION, graph_name=world.graph.name,
-                    graph_kernel_version=world.graph.kernel_version, tick=world.tick_no,
-                    rng=world.rng.snapshot(), globals_=deepcopy(world.globals_),
-                    nodes=nodes, log=deepcopy(world.log))
+                    graph_kernel_version=world.graph.kernel_version, run_no=world.run_no,
+                    seed=world.seed,
+                    rngs={nid: rng.snapshot() for nid, rng in world.rngs.items()},
+                    globals_=deepcopy(world.globals_), nodes=nodes,
+                    log=deepcopy(world.log))
 
 
 def restore_world(world: Any, snap: Snapshot) -> None:
@@ -111,38 +126,40 @@ def restore_world(world: Any, snap: Snapshot) -> None:
     if set(snap.nodes) != set(world._states):
         raise ValueError("快照节点集与当前图不符:改图后的旧快照需走编辑事务迁移,不支持直接恢复")
 
-    world.tick_no = snap.tick
-    world.rng.restore(snap.rng)  # 就地恢复:内嵌世界共享同一 RNG 对象
+    world.run_no = snap.run_no
+    world.seed = snap.seed
+    for nid, st in snap.rngs.items():
+        world.rngs[nid].restore(st)
     world.globals_ = deepcopy(snap.globals_)
     world.log = deepcopy(snap.log)
-    world.data_in_held.clear()
-    world.control_in_held.clear()
-    world.data_out_held.clear()
-    world.control_out_held.clear()
+    world.output_signals.clear()
+    world.control_in_levels.clear()
+    world.control_out_levels.clear()
     for nid, ns in snap.nodes.items():
         st = world._states[nid]
         st.state = deepcopy(ns.state)
+        st.buffers = {port: deepcopy(v) for port, v in ns.buffers.items()}
+        st.fresh = set(ns.fresh)
+        st.initialized = ns.initialized
         st.fault_count = ns.fault_count
         st.circuit_open = ns.circuit_open
         st.circuit_cool = ns.circuit_cool
-        for port, d in ns.data_in_held.items():
-            if d is not None:
-                world.data_in_held[(nid, port)] = DataPacket.from_dict(d)
-        for port, lvl in ns.control_in_held.items():
-            world.control_in_held[(nid, port)] = lvl
-        for port, d in ns.data_out_held.items():
-            if d is not None:
-                world.data_out_held[(nid, port)] = DataPacket.from_dict(d)
-        for port, lvl in ns.control_out_held.items():
-            world.control_out_held[(nid, port)] = lvl
+        for port, lvl in ns.control_in_levels.items():
+            world.control_in_levels[(nid, port)] = lvl
+        for port, lvl in ns.output_signals.items():
+            world.output_signals[(nid, port)] = lvl
+        for port, lvl in ns.control_out_levels.items():
+            world.control_out_levels[(nid, port)] = lvl
         if st.inner is not None:
             if ns.inner is None:
                 raise ValueError(f"子图节点 [{nid}] 缺少内嵌快照")
             restore_world(st.inner, Snapshot.from_dict(ns.inner))
-    # 控制端口默认电平兜底(从未收到电平的端口不出现在快照中)
+    # 信号/控制电平默认兜底(从未收到的端口不出现在快照中)
     for nid in world._states:
         nt = world.compiled.types[nid]
         for c in nt.control_in:
-            world.control_in_held.setdefault((nid, c.name), c.effective_default())
+            world.control_in_levels.setdefault((nid, c.name), c.effective_default())
         for c in nt.control_out:
-            world.control_out_held.setdefault((nid, c.name), c.default_level)
+            world.control_out_levels.setdefault((nid, c.name), c.default_level)
+        for p in nt.data_out:
+            world.output_signals.setdefault((nid, p.name), "active")

@@ -1,35 +1,49 @@
-"""执行引擎:同步轮次、调度、就绪、门控、屏蔽、异常熔断、全局提交。
+"""执行引擎:注入 → 按节点声明序单遍执行 → 静止。
 
-执行模型 = 同步响应式数据流(Lustre / Simulink 一族):
-- 轮初读:所有节点基于轮初 held 值判定就绪/门控/屏蔽并解析输入;
-- 轮内算:各节点独立计算,顺序无关(确定性);
-- 轮末提交:输出统一交换(扇出复制)、全局写按节点声明序 last-write-wins。
-采样保持:每个端口保持最近收到的值,慢速源只是更新得慢。
+执行模型 = 事件驱动的图状态转换系统(见 docs/graph-execution-model.md):
+- 宿主注入输入事件(数据→缓冲,控制→电平),引擎按声明序单遍执行;
+- 节点 = 类实例:初始化输入 = __init__,输入组 = 方法(组内全部有效输入有新值
+  即执行、消费清零),源节点每轮运行执行一次;
+- 端口信号:输入信号 = 显式信号线(为准)或上游输出信号传导;数据节点输出信号
+  只有一条自动传导(对应输入组全关 → 输出关闭),信号逻辑只在信号节点内;
+- 每节点独立随机流(世界种子 + 节点 id 派生),声明序即执行序,同一图同一输入
+  序列结果唯一。
 """
 
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Literal
 
-from ..model import (ACTIVE, AssetLibrary, Graph, NodeInstance, NodeType,
+from ..model import (ACTIVE, INACTIVE, AssetLibrary, Graph, NodeInstance, NodeType,
                      ValidationError, ValidationReport, validate)
-from .protocol import NodeImpl, TickContext, TickOutput
+from .protocol import InitContext, NodeImpl, TickContext, TickOutput
 from .registry import NodeRegistry
-from .rng import Rng
-from .signal import DataPacket, Level
+from .rng import Rng, derive_seed
 from .subgraph import SubgraphNodeImpl
+
+_MISSING = object()  # 端口无值哨兵(与"值为 None"区分)
+
+
+@dataclass
+class Event:
+    """宿主注入的外部事件:投递到指定端口(数据 → 输入缓冲;控制 → 电平)。"""
+
+    node: str
+    port: str
+    value: Any
+    kind: Literal["data", "control"] = "data"
 
 
 @dataclass
 class CompiledGraph:
-    """图资产的一次编译:类型解析 + 边索引(重复连线去重)。"""
+    """图资产的一次编译:类型解析 + 边索引(扇入禁止由校验器保证)。"""
 
     graph: Graph
     types: dict[str, NodeType]
-    out_edges: dict[tuple[str, str], list[tuple[str, str]]]
-    in_edges: dict[tuple[str, str], list[tuple[str, str]]]
+    out_edges: dict[tuple[str, str, str], list[tuple[str, str, str]]]
+    in_edge: dict[tuple[str, str, str], tuple[str, str, str]]
 
     @classmethod
     def build(cls, lib: AssetLibrary, graph: Graph) -> "CompiledGraph":
@@ -39,49 +53,40 @@ class CompiledGraph:
             if nt is None:  # World 构造已校验;此处防御
                 raise KeyError(f"节点类型 '{ni.type_name}' 未声明")
             types[ni.node_id] = nt
-        out_edges: dict[tuple[str, str], list[tuple[str, str]]] = {}
-        in_edges: dict[tuple[str, str], list[tuple[str, str]]] = {}
-        seen: set[tuple[str, str, str, str]] = set()
+        out_edges: dict[tuple[str, str, str], list[tuple[str, str, str]]] = {}
+        in_edge: dict[tuple[str, str, str], tuple[str, str, str]] = {}
         for w in graph.wires:
-            key = (w.src_node, w.src_port, w.dst_node, w.dst_port)
-            if key in seen:
-                continue
-            seen.add(key)
-            out_edges.setdefault((w.src_node, w.src_port), []).append((w.dst_node, w.dst_port))
-            in_edges.setdefault((w.dst_node, w.dst_port), []).append((w.src_node, w.src_port))
-        return cls(graph=graph, types=types, out_edges=out_edges, in_edges=in_edges)
+            src_kind = "data" if w.src_port in types[w.src_node].data_out_map() else "signal"
+            src_key = (w.src_node, w.src_port, src_kind)
+            dst_key = (w.dst_node, w.dst_port, w.dst_slot)
+            out_edges.setdefault(src_key, []).append(dst_key)
+            in_edge[dst_key] = src_key
+        return cls(graph=graph, types=types, out_edges=out_edges, in_edge=in_edge)
 
 
 @dataclass
 class NodeState:
-    """节点运行时状态(世界事实):状态字段表 + 熔断器状态 + 内嵌世界(子图)。"""
+    """节点运行时状态(世界事实):状态字段表 + 输入缓冲 + 熔断器 + 内嵌世界。"""
 
     state: dict[str, Any]
+    buffers: dict[str, Any] = field(default_factory=dict)   # 端口名 → 最近值(键存在即有值)
+    fresh: set[str] = field(default_factory=set)            # 触发后消费清零的新鲜端口名
+    initialized: bool = True                                # __init__ 已执行
     fault_count: int = 0
     circuit_open: bool = False
     circuit_cool: int = 0            # 熔断冷却倒计时(半开尝试)
-    inner: "World | None" = None    # 子图节点:独立轮次空间的内嵌世界
-
-
-@dataclass
-class _TickPlan:
-    """轮初对每个节点的一次性判定(全部基于轮初 held 值)。"""
-
-    ready: bool
-    enabled: bool
-    masked_in: frozenset[str]
-    masked_out: frozenset[str]
+    inner: "World | None" = None    # 子图节点:独立运行空间的内嵌世界
 
 
 class World:
-    """常驻热运行的数据流网络:每拍全图同步推进一拍。
+    """事件驱动的图状态转换系统:注入 → 声明序单遍执行 → 静止。
 
-    宿主(编辑器 headless 预览 / eidolon-runtime)同步调用 tick();tick 是原子操作,
-    编辑事务与快照天然位于轮界。
+    宿主同步调用 run(events);一次运行原子完成,编辑事务与快照天然位于
+    两次运行之间(世界静止)。
     """
 
     def __init__(self, lib: AssetLibrary, graph: Graph, registry: NodeRegistry,
-                 seed: int = 0, rng: Rng | None = None,
+                 seed: int = 0,
                  fuse_limit: int = 5, fuse_cool_ticks: int = 10,
                  _stack: tuple[str, ...] = ()) -> None:
         self.lib = lib
@@ -93,15 +98,19 @@ class World:
         self.graph = graph
         self.compiled = CompiledGraph.build(lib, graph)
         self._node_map = graph.node_map()
-        self.tick_no = 0
-        self.rng = rng if rng is not None else Rng(seed)  # 子图共享父世界 RNG
+        self.run_no = 0
+        self.seed = seed
+        # 每节点独立随机流(世界种子 + 节点 id 派生):加节点不改他人轨迹
+        self.rngs: dict[str, Rng] = {ni.node_id: Rng(derive_seed(seed, ni.node_id))
+                                     for ni in graph.nodes}
         self.globals_: dict[str, Any] = {g.name: deepcopy(g.default)
                                          for g in lib.globals_.values()}
-        # 端口 held 值表(采样保持;数据包存在即 warm)
-        self.data_in_held: dict[tuple[str, str], DataPacket | None] = {}
-        self.control_in_held: dict[tuple[str, str], Level] = {}
-        self.data_out_held: dict[tuple[str, str], DataPacket | None] = {}
-        self.control_out_held: dict[tuple[str, str], Level] = {}
+        # 端口信号:输出信号为存储状态(轮次内按声明序重算);控制电平永远有定义
+        self.output_signals: dict[tuple[str, str], str] = {}
+        self.control_in_levels: dict[tuple[str, str], str] = {}
+        self.control_out_levels: dict[tuple[str, str], str] = {}
+        self.run_outputs: dict[tuple[str, str], Any] = {}   # 本次运行各输出端口的产出
+        self.forced_inactive: set[tuple[str, str]] = set()  # 子图边界注入的关闭
         self.log: list[dict] = []  # 事件日志:只追加、可截断
         self.fuse_limit = fuse_limit
         self.fuse_cool_ticks = fuse_cool_ticks
@@ -110,6 +119,9 @@ class World:
         self._impls: dict[str, NodeImpl] = {}
         self._states: dict[str, NodeState] = {}
         self._init_nodes(_stack)
+        # 初始化输入(__init__):绑定齐备的立即执行,连线的等待上游首值
+        for ni in self.graph.nodes:
+            self._try_init(ni.node_id)
 
     # ------------------------------------------------------------------
     # 构造
@@ -117,162 +129,247 @@ class World:
 
     def _init_nodes(self, stack: tuple[str, ...]) -> None:
         for ni in self.graph.nodes:
-            st, impl = self._build_node_runtime(ni, stack)
+            nt = self.compiled.types[ni.node_id]
+            st = NodeState(state=nt.default_state(),
+                           initialized=not bool(nt.init_in))
+            if nt.impl.kind == "subgraph":
+                st.inner = self._build_inner(ni, nt, stack)
+                impl: NodeImpl = SubgraphNodeImpl(nt)
+            else:
+                impl_cls = self.registry.get(nt.impl.name or nt.name)
+                impl = impl_cls()
             self._states[ni.node_id] = st
             self._impls[ni.node_id] = impl
         for ni in self.graph.nodes:
             nt = self.compiled.types[ni.node_id]
             for c in nt.control_in:
-                self.control_in_held[(ni.node_id, c.name)] = c.effective_default()
+                self.control_in_levels[(ni.node_id, c.name)] = c.effective_default()
             for c in nt.control_out:
-                self.control_out_held[(ni.node_id, c.name)] = c.default_level
+                self.control_out_levels[(ni.node_id, c.name)] = c.default_level
+            for p in nt.data_out:
+                self.output_signals[(ni.node_id, p.name)] = ACTIVE
 
-    def _build_node_runtime(self, ni: NodeInstance, stack: tuple[str, ...]) -> tuple[NodeState, NodeImpl]:
-        nt = self.compiled.types[ni.node_id]
-        st = NodeState(state=nt.default_state())
-        impl: NodeImpl
-        if nt.impl.kind == "subgraph":
-            st.inner = self._build_inner(nt, stack)
-            impl = SubgraphNodeImpl(nt)
-        else:
-            impl_cls = self.registry.get(nt.impl.name or nt.name)
-            impl = impl_cls()
-        return st, impl
-
-    def _build_inner(self, nt: NodeType, stack: tuple[str, ...]) -> "World":
+    def _build_inner(self, ni: NodeInstance, nt: NodeType, stack: tuple[str, ...]) -> "World":
         gname = nt.impl.graph
         if gname in stack:
             rep = ValidationReport(errors=[f"子图嵌套成环:{stack + (gname,)}"])
             raise ValidationError(rep)
-        return World(self.lib, self.lib.graphs[gname], self.registry, rng=self.rng,
+        # 子图实例种子 = 世界种子 + 实例 id + 图名:同名子图的多个实例互不共享随机流
+        inner_seed = derive_seed(self.seed, f"{ni.node_id}:{gname}")
+        return World(self.lib, self.lib.graphs[gname], self.registry, seed=inner_seed,
                      fuse_limit=self.fuse_limit, fuse_cool_ticks=self.fuse_cool_ticks,
                      _stack=stack + (self.graph.name,))
 
     # ------------------------------------------------------------------
-    # 轮次
+    # 运行
     # ------------------------------------------------------------------
 
-    def tick(self) -> None:
-        tick = self.tick_no
-
-        # ---- 轮初:所有节点基于轮初 held 值判定(顺序无关) ----
-        plans: dict[str, _TickPlan] = {}
+    def run(self, events: list[Event] | None = None) -> None:
+        """注入事件 → 按节点声明序单遍执行 → 静止。原子操作。"""
+        self.run_no += 1
+        self.run_outputs = {}
+        if events:
+            for ev in events:
+                self._deliver(ev)
         for ni in self.graph.nodes:
-            nid = ni.node_id
-            nt = self.compiled.types[nid]
-            masked_in, masked_out = self._masked_ports(nid, nt)
-            wait = [p.name for p in nt.data_in
-                    if not p.is_immediate()
-                    and (nid, p.name) in self.compiled.in_edges
-                    and p.name not in masked_in]
-            ready = all(self.data_in_held.get((nid, p)) is not None for p in wait)
-            enabled = all(self.control_in_held[(nid, c.name)] == ACTIVE
-                          for c in nt.control_in if c.semantic == "enable")
-            plans[nid] = _TickPlan(ready=ready, enabled=enabled,
-                                   masked_in=masked_in, masked_out=masked_out)
+            self._node_turn(ni.node_id)
 
-        # ---- 轮内:各节点独立计算 ----
-        outputs: dict[str, TickOutput] = {}
-        fired: set[str] = set()
-        for ni in self.graph.nodes:
-            nid = ni.node_id
-            nt = self.compiled.types[nid]
-            st = self._states[nid]
-            plan = plans[nid]
-            if not plan.ready:
-                continue  # 就绪前不触发、不发输出
-            none_outs = {p.name: None for p in nt.data_out if p.name not in plan.masked_out}
-            if not plan.enabled:
-                # 门控:在节点实现之前被运行时拦截——照发 None、状态不动、不写全局
-                outputs[nid] = TickOutput(data_out=none_outs)
-                continue
-            if st.circuit_open:
-                st.circuit_cool -= 1
-                if st.circuit_cool > 0:
-                    # 熔断:跳过内部工作、照发 None、告警;半开倒计时归零后重试一次
-                    outputs[nid] = TickOutput(data_out=none_outs)
-                    continue
-            out = self._fire(nid, nt, st, tick, plan.masked_in)
-            outputs[nid] = out
-            fired.add(nid)
+    def _deliver(self, ev: Event) -> None:
+        st = self._states[ev.node]
+        if ev.kind == "data":
+            st.buffers[ev.port] = ev.value  # 一格缓冲,新值覆盖
+            st.fresh.add(ev.port)
+        else:
+            self.control_in_levels[(ev.node, ev.port)] = ev.value
 
-        # ---- 轮末:统一交换 ----
-        global_writes: dict[str, Any] = {}
-        for ni in self.graph.nodes:
-            nid = ni.node_id
-            nt = self.compiled.types[nid]
-            out = outputs.get(nid)
-            if out is None:
-                continue
-            masked_out = plans[nid].masked_out
-            for p in nt.data_out:
-                if p.name in masked_out:
-                    continue  # 屏蔽输出:不发值,下游冻结旧值
-                value = out.data_out.get(p.name)  # 未写 = None(每轮必发契约)
-                pkt = DataPacket(payload=value, source=f"{nid}.{p.name}", tick=tick)
-                self.data_out_held[(nid, p.name)] = pkt
-                for (dn, dp) in self.compiled.out_edges.get((nid, p.name), []):
-                    self.data_in_held[(dn, dp)] = pkt  # 扇出 = 复制;首包到达即 warm
-                if p.global_write is not None and nid in fired:
-                    global_writes[p.global_write] = value  # 声明序 last-write-wins
-            for c in nt.control_out:
-                level = out.control_out.get(c.name)
-                if level is None:
-                    continue  # 未写:保持原电平(控制按轮保持)
-                self.control_out_held[(nid, c.name)] = level
-                for (dn, dp) in self.compiled.out_edges.get((nid, c.name), []):
-                    self.control_in_held[(dn, dp)] = level
-        for name, value in global_writes.items():
-            self.globals_[name] = value
-        self.tick_no += 1
+    def _node_turn(self, nid: str) -> None:
+        nt = self.compiled.types[nid]
+        st = self._states[nid]
+        # 1) 初始化(__init__):完成前方法组不执行
+        if not st.initialized:
+            if not self._try_init(nid):
+                self._update_output_signals(nid)
+                return
+        # 2) 门控 / 熔断冷却:不执行,输出信号按传导关闭
+        if not self._enabled(nid):
+            self._update_output_signals(nid)
+            return
+        if st.circuit_open:
+            st.circuit_cool -= 1
+            if st.circuit_cool > 0:
+                self._update_output_signals(nid)
+                return
+            # 冷却归零:半开,尝试执行一次(成功复位,失败重新熔断)
+        # 3) 源节点:每轮运行执行一次
+        if nt.is_source():
+            self._fire(nid, nt, st, group="step", ports=())
+        # 4) 输入组:组声明序;触发只看未绑定的连线输入(绑定端口仅作值源)
+        for g in nt.groups:
+            wired = [p for p in g.inputs
+                     if not nt.data_in_map()[p].is_bound()]
+            if wired and all(self._input_signal(nid, p) == INACTIVE for p in wired):
+                continue  # 全部有效输入被关闭 → 组不执行(输出信号按传导关闭)
+            trigger = [p for p in wired if self._input_signal(nid, p) == ACTIVE]
+            if all(p in st.fresh for p in trigger):
+                self._fire(nid, nt, st, group=g.name, ports=tuple(g.inputs))
+        # 5) 输出信号自动传导重算
+        self._update_output_signals(nid)
 
-    def _fire(self, nid: str, nt: NodeType, st: NodeState, tick: int,
-              masked_in: frozenset[str]) -> TickOutput:
-        # 解析输入(轮初值):连线 held → 常量 → 全局拉取 → None(冷/裸)
+    def _try_init(self, nid: str) -> bool:
+        """初始化输入全部就绪 → 执行 __init__ 一次;否则继续等待(方法组不执行)。"""
+        st = self._states[nid]
+        if st.initialized:
+            return True
+        nt = self.compiled.types[nid]
+        vals: dict[str, Any] = {}
+        for p in nt.init_in:
+            if self._input_signal(nid, p) == INACTIVE:
+                continue  # 关闭的初始化输入视为不存在
+            v = self._resolve_port(nid, p)
+            if v is _MISSING:
+                return False  # 尚未就绪
+            vals[p] = v
+        ctx = InitContext(data_in=vals,
+                          config=nt.resolve_config(self._node_map[nid].config),
+                          inner=st.inner)
+        extra = self._impls[nid].init(ctx)
+        if extra:
+            merged = dict(st.state)
+            merged.update(extra)
+            st.state = merged
+        st.initialized = True
+        return True
+
+    def _fire(self, nid: str, nt: NodeType, st: NodeState, group: str,
+              ports: tuple[str, ...]) -> None:
+        # 解析本组输入(关闭的端口旁路,不参与计算)
         data_in: dict[str, Any] = {}
-        for p in nt.data_in:
-            if p.name in masked_in:
-                data_in[p.name] = None  # 屏蔽输入:旁路,不参与计算
-                continue
-            pkt = self.data_in_held.get((nid, p.name))
-            if pkt is not None:
-                data_in[p.name] = pkt.payload
-            elif p.const_set:
-                data_in[p.name] = deepcopy(p.const)
-            elif p.global_read is not None:
-                data_in[p.name] = self.globals_.get(p.global_read)  # 拉:开火时取最新值
-            else:
-                data_in[p.name] = None
-        control_in = {c.name: self.control_in_held[(nid, c.name)] for c in nt.control_in}
+        closed_in: set[str] = set()
+        if group == "step":
+            for p in nt.data_in:
+                if p.name in nt.init_in or p.name in nt.group_inputs():
+                    continue
+                if self._input_signal(nid, p.name) == INACTIVE:
+                    closed_in.add(p.name)
+                    continue
+                v = self._resolve_port(nid, p.name)
+                if v is not _MISSING:
+                    data_in[p.name] = v
+        else:
+            for p in ports:
+                if self._input_signal(nid, p) == INACTIVE:
+                    closed_in.add(p)
+                    continue
+                v = self._resolve_port(nid, p)  # 缓冲 → 常量 → 全局读取
+                if v is not _MISSING:
+                    data_in[p] = v
+        control_in = {c.name: self.control_in_levels[(nid, c.name)] for c in nt.control_in}
         state = deepcopy(st.state)
-        # 输入信号写状态字段(屏蔽旁路):"参数可以被信号调制" = 普通连线
-        for p in nt.data_in:
-            if p.state_write and p.name not in masked_in and p.name in data_in:
-                state[p.state_write] = data_in[p.name]
-        ctx = TickContext(tick=tick, rng=self.rng, data_in=data_in, control_in=control_in,
-                          state=state, config=nt.resolve_config(self._node_map[nid].config),
-                          masked_in=masked_in, inner=st.inner)
+        ctx = TickContext(run_no=self.run_no, group=group, rng=self.rngs[nid],
+                          data_in=data_in, control_in=control_in, state=state,
+                          config=nt.resolve_config(self._node_map[nid].config),
+                          closed_in=frozenset(closed_in), inner=st.inner)
         try:
             out = self._impls[nid].tick(ctx)
             self._check_output(nid, nt, out)
         except Exception as exc:
-            # 节点异常:本轮所有输出发 None + 错误事件进日志;世界不停
+            # 节点异常:不产出任何输出 + 错误事件进日志;世界不停
             st.fault_count += 1
-            self.log.append({"tick": tick, "node": nid, "level": "error",
+            self.log.append({"run": self.run_no, "node": nid, "level": "error",
                              "message": f"{type(exc).__name__}: {exc}"})
             if st.fault_count >= self.fuse_limit:
                 if not st.circuit_open:
-                    self.log.append({"tick": tick, "node": nid, "level": "warning",
+                    self.log.append({"run": self.run_no, "node": nid, "level": "warning",
                                      "message": f"连续 {st.fault_count} 轮异常,熔断"})
                 st.circuit_open = True
                 st.circuit_cool = self.fuse_cool_ticks
-            return TickOutput(data_out={p.name: None for p in nt.data_out})
+            return
         st.fault_count = 0
         st.circuit_open = False
         merged = dict(state)
         merged.update(out.state)
         st.state = merged
-        return out
+        # 组输入消费清零(触发后重新等待全套新值)
+        for p in ports:
+            st.fresh.discard(p)
+        # 数据输出:记录本轮产出 + 沿连线投递 + 全局写入
+        for p, value in out.data_out.items():
+            self.run_outputs[(nid, p)] = value
+            decl = nt.data_out_map()[p]
+            for (dn, dp, _dslot) in self.compiled.out_edges.get((nid, p, "data"), []):
+                dst = self._states[dn]
+                dst.buffers[dp] = value
+                dst.fresh.add(dp)
+            if decl.global_write is not None:
+                self.globals_[decl.global_write] = value
+        # 控制输出(仅信号节点):显式写电平,未写保持;沿信号线投递到下游控制输入
+        # (连到数据端口信号的线不投递——下游输入信号按需从 control_out_levels 推导)
+        for c, lvl in out.control_out.items():
+            self.control_out_levels[(nid, c)] = lvl
+            for (dn, dp, _dslot) in self.compiled.out_edges.get((nid, c, "signal"), []):
+                if dp in self.compiled.types[dn].control_in_map():
+                    self.control_in_levels[(dn, dp)] = lvl
+
+    # ------------------------------------------------------------------
+    # 信号
+    # ------------------------------------------------------------------
+
+    def _enabled(self, nid: str) -> bool:
+        nt = self.compiled.types[nid]
+        return all(self.control_in_levels[(nid, c.name)] == ACTIVE
+                   for c in nt.control_in if c.semantic == "enable")
+
+    def _input_signal(self, nid: str, port: str) -> str:
+        """输入信号:子图边界强制关闭 → 显式信号线(为准)→ 上游输出信号传导 → 默认带电。"""
+        if (nid, port) in self.forced_inactive:
+            return INACTIVE
+        edge = self.compiled.in_edge.get((nid, port, "signal"))
+        if edge is not None:
+            src, sport, _ = edge
+            return self.control_out_levels.get((src, sport), INACTIVE)
+        edge = self.compiled.in_edge.get((nid, port, "data"))
+        if edge is not None:
+            src, sport, _ = edge
+            return self.output_signals.get((src, sport), ACTIVE)
+        return ACTIVE
+
+    def _update_output_signals(self, nid: str) -> None:
+        """数据节点输出信号的唯一自动传导:对应输入组全关 → 输出关闭;门控/熔断 → 全关。"""
+        nt = self.compiled.types[nid]
+        st = self._states[nid]
+        gated = (not self._enabled(nid)) or st.circuit_open
+        for g in nt.groups:
+            all_closed = bool(g.inputs) and all(
+                self._input_signal(nid, p) == INACTIVE for p in g.inputs)
+            lvl = INACTIVE if (gated or all_closed) else ACTIVE
+            for p in g.outputs:
+                self.output_signals[(nid, p)] = lvl
+        for p in nt.data_out:
+            if p.name not in nt.group_outputs():
+                self.output_signals[(nid, p.name)] = INACTIVE if gated else ACTIVE
+        # 子图边界:内部映射输出信号关闭 → 外部输出信号关闭
+        if nt.impl.kind == "subgraph" and st.inner is not None:
+            for p in nt.data_out:
+                if self.output_signals.get((nid, p.name)) == ACTIVE:
+                    target = nt.impl.port_map.get(p.name)
+                    if target is not None and st.inner.output_signals.get(target) == INACTIVE:
+                        self.output_signals[(nid, p.name)] = INACTIVE
+
+    # ------------------------------------------------------------------
+    # 输入解析
+    # ------------------------------------------------------------------
+
+    def _resolve_port(self, nid: str, port: str) -> Any:
+        """端口值解析:缓冲 → 常量 → 全局读取 → MISSING。"""
+        st = self._states[nid]
+        if port in st.buffers:
+            return st.buffers[port]
+        p = self.compiled.types[nid].data_in_map()[port]
+        if p.const_set:
+            return deepcopy(p.const)
+        if p.global_read is not None:
+            return self.globals_.get(p.global_read)
+        return _MISSING
 
     @staticmethod
     def _check_output(nid: str, nt: NodeType, out: TickOutput) -> None:
@@ -281,20 +378,11 @@ class World:
                 raise ValueError(f"节点 [{nid}] 写了未声明的数据输出 '{key}'")
         for key in out.control_out:
             if key not in nt.control_out_map():
-                raise ValueError(f"节点 [{nid}] 写了未声明的控制输出 '{key}'")
+                raise ValueError(f"节点 [{nid}] 写了未声明的控制输出 '{key}'"
+                                 f"(数据节点不触碰信号)")
         for key in out.state:
             if key not in nt.state_map():
                 raise ValueError(f"节点 [{nid}] 写了未声明的状态字段 '{key}'")
-
-    def _masked_ports(self, nid: str, nt: NodeType) -> tuple[frozenset[str], frozenset[str]]:
-        masked_in: set[str] = set()
-        masked_out: set[str] = set()
-        data_in_names = set(nt.data_in_map())
-        for c in nt.control_in:
-            if c.semantic != "mask" or self.control_in_held[(nid, c.name)] != ACTIVE:
-                continue
-            (masked_in if c.target in data_in_names else masked_out).add(c.target)
-        return frozenset(masked_in), frozenset(masked_out)
 
     # ------------------------------------------------------------------
     # 快照 / 编辑
@@ -309,6 +397,6 @@ class World:
         restore_world(self, snap)
 
     def edit(self, ops: list) -> Any:
-        """编辑事务:停 tick 假设由宿主保证(tick 同步调用,天然位于轮界)。"""
+        """编辑事务:世界静止假设由宿主保证(run 同步调用,天然位于两次运行之间)。"""
         from .edit import edit_transaction
         return edit_transaction(self, ops)

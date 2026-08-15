@@ -1,8 +1,10 @@
-"""节点类型:接口契约 + 实现绑定。
+"""节点类型:类式接口契约 + 实现绑定。
 
-节点类型 = 类式接口契约(数据端口/控制端口/状态字段/配置字段)+ 实现绑定(代码
-模块或子图)。内部是程序还是 LLM、是单节点还是嵌套子图,接口上一概无关——
-节点协议是唯一边界,新能力 = 新节点类型资产,不动运行时。
+节点类型 = 类;实例 = 类型 + 配置覆盖 + 连线。与编程概念的强关联:
+输入组 = 方法(参数),输出组 = 方法返回值,初始化输入 = __init__ 参数,
+状态字段 = 实例字段(方法间共享),配置字段 = 只读字段。
+触发判定 / 组缓冲 / 信号自动传导 / 输出投递 / 状态提交 = 基类 final 方法,
+不可重载;节点实现只能重载各组处理逻辑与初始化逻辑。
 """
 
 from __future__ import annotations
@@ -11,7 +13,8 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from .types import ConfigField, ControlIn, ControlOut, DataIn, DataOut, StateField
+from .types import (ConfigField, ControlIn, ControlOut, DataIn, DataOut, InputGroup,
+                    StateField)
 
 
 @dataclass
@@ -36,6 +39,9 @@ class NodeType:
     control_out: list[ControlOut] = field(default_factory=list)
     state: list[StateField] = field(default_factory=list)  # 保序(初始快照字段序)
     config: list[ConfigField] = field(default_factory=list)
+    groups: list[InputGroup] = field(default_factory=list)  # 输入组↔输出组一一对应
+    init_in: list[str] = field(default_factory=list)       # __init__ 参数端口(数据输入)
+    auto: bool = False  # 自走(源):每轮运行自动执行一次(时钟/计时器/随机)
     impl: ImplBinding = field(default_factory=ImplBinding)
 
     # -- 声明查询(端口/字段名 → 声明) --
@@ -57,6 +63,27 @@ class NodeType:
     def config_map(self) -> dict[str, ConfigField]:
         return {f.name: f for f in self.config}
 
+    def group_map(self) -> dict[str, InputGroup]:
+        return {g.name: g for g in self.groups}
+
+    # -- 形态判定(派生形态,由声明决定) --
+    def is_signal_node(self) -> bool:
+        """信号节点 = 声明了控制输出端口;信号逻辑的唯一所在地。"""
+        return bool(self.control_out)
+
+    def is_source(self) -> bool:
+        """源节点:每轮运行自动执行一次。无输入组的节点自动视为源。"""
+        return self.auto or not self.groups
+
+    def group_inputs(self) -> set[str]:
+        """所有组输入端口名(校验/运行时用)。"""
+        return {p for g in self.groups for p in g.inputs}
+
+    def group_outputs(self) -> set[str]:
+        """所有组输出端口名。"""
+        return {p for g in self.groups for p in g.outputs}
+
+    # -- 初始状态 / 配置 --
     def default_state(self) -> dict[str, Any]:
         """初始状态(默认值逐字段深拷贝,防可变默认值跨实例共享)。"""
         return {f.name: deepcopy(f.default) for f in self.state}

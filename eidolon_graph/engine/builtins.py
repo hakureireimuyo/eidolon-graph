@@ -6,53 +6,58 @@ Latch / Timer / Threshold / Random / Printer。
 不进内核,由宿主注册。
 
 约定:
-- None 输入 = "上游主动报告无事发生",节点自行决定跳过(不是错误);
-- 处理不了的非 None 输入 → 抛异常,走引擎异常策略(输出 None + 日志 + 熔断);
-- 门控/屏蔽/熔断全部由运行时拦截,实现者无感知。
+- 数据节点(无控制输出)不触碰信号:输入信号屏蔽由引擎旁路,输出信号由自动传导;
+- 信号节点(有控制输出)显式写信号电平:AND/OR/NOT/Latch/Timer/Threshold 等;
+- 门控/熔断全部由运行时拦截,实现者无感知;
+- 处理不了的非 None 输入 → 抛异常,走引擎异常策略(不产出 + 日志 + 熔断)。
 """
 
 from __future__ import annotations
 
 from ..model import (Annot, AssetLibrary, ConfigField, ControlIn, ControlOut, DataIn,
-                     DataOut, ImplBinding, NodeType, StateField)
+                     DataOut, ImplBinding, InputGroup, NodeType, StateField)
 from .protocol import NodeImpl, TickContext, TickOutput
 from .registry import NodeRegistry
 from .signal import ACTIVE, INACTIVE
 
 # ---------------------------------------------------------------------------
-# Clock 时钟:频率是可写状态字段——"参数可以被信号调制" = 普通连线,零特例
+# Clock 时钟:源节点(自走);速率是状态字段,可被 set_rate 组(方法)调制
 # ---------------------------------------------------------------------------
 
 CLOCK = NodeType(
     name="Clock",
-    data_in=[DataIn("rate", type_annot=Annot(int), const_set=True, const=1,
-                    state_write="rate")],
+    data_in=[DataIn("rate", type_annot=Annot(int), const_set=True, const=1)],
     data_out=[DataOut("count", type_annot=Annot(int))],
     control_in=[ControlIn("enable")],
     state=[StateField("count", 0, Annot(int)), StateField("rate", 1, Annot(int))],
+    groups=[InputGroup("set_rate", inputs=["rate"], outputs=[])],  # rate 绑定端口=值源,不参与触发
+    auto=True,
     impl=ImplBinding(kind="code", name="Clock"),
 )
 
 
 class ClockImpl(NodeImpl):
     def tick(self, ctx: TickContext) -> TickOutput:
-        count = ctx.state.get("count", 0)
-        rate = ctx.state.get("rate", 1)
-        new_count = count + rate
-        return TickOutput(data_out={"count": new_count}, state={"count": new_count})
+        if ctx.group == "step":
+            count = ctx.state.get("count", 0)
+            rate = ctx.state.get("rate", 1)
+            new_count = count + rate
+            return TickOutput(data_out={"count": new_count}, state={"count": new_count})
+        # set_rate:参数调制(普通方法,写状态,无输出)
+        return TickOutput(state={"rate": ctx.data_in.get("rate")})
 
 
 # ---------------------------------------------------------------------------
-# Counter 计数器
+# Counter 计数器:组 [increment] → [count];屏蔽 increment 端口信号 = 计数暂停
 # ---------------------------------------------------------------------------
 
 COUNTER = NodeType(
     name="Counter",
     data_in=[DataIn("increment", type_annot=Annot(int))],
     data_out=[DataOut("count", type_annot=Annot(int))],
-    control_in=[ControlIn("enable"),
-                ControlIn("hold", semantic="mask", target="increment")],  # 屏蔽输入 = 计数暂停
+    control_in=[ControlIn("enable")],
     state=[StateField("count", 0, Annot(int))],
+    groups=[InputGroup("tick", inputs=["increment"], outputs=["count"])],
     impl=ImplBinding(kind="code", name="Counter"),
 )
 
@@ -76,6 +81,7 @@ THRESHOLD = NodeType(
     data_out=[DataOut("over")],
     control_out=[ControlOut("under", default_level=ACTIVE)],
     config=[ConfigField("limit", None)],
+    groups=[InputGroup("judge", inputs=["value"], outputs=["over"])],
     impl=ImplBinding(kind="code", name="Threshold"),
 )
 
@@ -98,6 +104,7 @@ COMPARATOR = NodeType(
     data_in=[DataIn("a"), DataIn("b")],
     data_out=[DataOut("gt"), DataOut("eq")],
     control_out=[ControlOut("a_gt_b")],
+    groups=[InputGroup("compare", inputs=["a", "b"], outputs=["gt", "eq"])],
     impl=ImplBinding(kind="code", name="Comparator"),
 )
 
@@ -113,7 +120,7 @@ class ComparatorImpl(NodeImpl):
 
 
 # ---------------------------------------------------------------------------
-# AND / OR / NOT:控制逻辑元件(level 输入,引擎不介入)
+# AND / OR / NOT:信号逻辑元件(level 输入,引擎不介入;无数据输入 → 源节点)
 # ---------------------------------------------------------------------------
 
 AND_NODE = NodeType(
@@ -161,7 +168,7 @@ class NotImpl(NodeImpl):
 
 
 # ---------------------------------------------------------------------------
-# Switch 开关:数据入、门控转发 + 数据→控制转换(真值电平)
+# Switch 开关:数据入、门控转发 + 数据→信号转换(真值电平)
 # ---------------------------------------------------------------------------
 
 SWITCH = NodeType(
@@ -170,6 +177,7 @@ SWITCH = NodeType(
     data_out=[DataOut("selected")],
     control_in=[ControlIn("enable")],
     control_out=[ControlOut("out")],
+    groups=[InputGroup("pass", inputs=["value"], outputs=["selected"])],
     impl=ImplBinding(kind="code", name="Switch"),
 )
 
@@ -182,7 +190,7 @@ class SwitchImpl(NodeImpl):
 
 
 # ---------------------------------------------------------------------------
-# Latch 锁存器(SR):set 优先
+# Latch 锁存器(SR):set 优先;信号节点(无数据输入 → 源节点,每轮运行)
 # ---------------------------------------------------------------------------
 
 LATCH = NodeType(
@@ -205,7 +213,7 @@ class LatchImpl(NodeImpl):
 
 
 # ---------------------------------------------------------------------------
-# Timer 计时器:start 电平持续 → 倒计时;stop 归零
+# Timer 计时器:start 电平持续 → 倒计时;stop 归零;信号节点 + 源节点
 # ---------------------------------------------------------------------------
 
 TIMER = NodeType(
@@ -234,7 +242,7 @@ class TimerImpl(NodeImpl):
 
 
 # ---------------------------------------------------------------------------
-# Random 随机:门控 inactive 不消耗随机数(引擎拦截,不进入 tick)
+# Random 随机:源节点(自走);门控 inactive 不消耗随机数(引擎拦截,不进入 tick)
 # ---------------------------------------------------------------------------
 
 RANDOM = NodeType(
@@ -243,6 +251,7 @@ RANDOM = NodeType(
     control_in=[ControlIn("enable")],
     config=[ConfigField("low", 0.0, Annot(float)), ConfigField("high", 1.0, Annot(float)),
             ConfigField("as_int", False, Annot(bool))],
+    auto=True,
     impl=ImplBinding(kind="code", name="Random"),
 )
 
@@ -266,6 +275,7 @@ PRINTER = NodeType(
     data_in=[DataIn("msg")],
     data_out=[DataOut("echo")],
     state=[StateField("last_msg", None)],
+    groups=[InputGroup("print", inputs=["msg"], outputs=["echo"])],
     impl=ImplBinding(kind="code", name="Printer"),
 )
 

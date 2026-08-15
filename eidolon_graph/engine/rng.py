@@ -1,6 +1,7 @@
-"""确定性 RNG(SplitMix64):种子 + 计数器,可精确序列化。
+"""确定性 RNG(SplitMix64):每节点独立随机流,可精确序列化。
 
-与文档快照结构"RNG 状态(种子/计数器)"对齐:给定 (seed, counter),后续随机序列
+世界种子 + 节点 id 派生出每节点独立流(稳定字符串哈希,与 Python hash 无关):
+加节点、改声明序不扰动其他节点的随机轨迹。给定 (seed, counter),后续随机序列
 完全确定;读档后世界走同一条随机轨迹(确定性随机)。零第三方依赖。
 """
 
@@ -9,6 +10,8 @@ from __future__ import annotations
 MASK64 = (1 << 64) - 1
 _GOLDEN = 0x9E3779B97F4A7C15
 _OFFSET = 0x6A09E667F3BCC909  # 防 seed=0 退化(全零流)
+_FNV_OFFSET = 0xCBF29CE484222325
+_FNV_PRIME = 0x100000001B3
 
 
 def _mix64(z: int) -> int:
@@ -17,8 +20,21 @@ def _mix64(z: int) -> int:
     return (z ^ (z >> 31)) & MASK64
 
 
+def _stable_hash(s: str) -> int:
+    """FNV-1a 64 位:跨进程稳定(PYTHONHASHSEED 无关)。"""
+    h = _FNV_OFFSET
+    for ch in s.encode("utf-8"):
+        h = ((h ^ ch) * _FNV_PRIME) & MASK64
+    return h
+
+
+def derive_seed(base_seed: int, key: str) -> int:
+    """世界种子 + 稳定字符串键 → 节点独立流种子。"""
+    return (_mix64(base_seed & MASK64) ^ _stable_hash(key)) & MASK64
+
+
 class Rng:
-    """世界级确定性随机源:节点在 tick 内调用,调用顺序计入快照(计数器)。"""
+    """节点级确定性随机源:节点在组执行内调用,调用顺序计入快照(计数器)。"""
 
     def __init__(self, seed: int = 0) -> None:
         self.seed = _mix64(seed & MASK64)

@@ -1,31 +1,15 @@
-"""数据包与控制电平:采样保持的最小单位。
+"""端口信号:每个数据端口自带电平,决定网络通断。
 
-- 数据包沿数据连线流动,不可变;时间戳 = 产生轮次,供新鲜度判定(None 也是新包,
-  与"屏蔽(不发值、下游冻结旧值)"区分)。
-- 控制电平无载荷、只承载 active/inactive;电平按轮保持,永远有定义(默认电平兜底)。
+- 信号沿连线流动(像数据一样):active = 带电(参与传播与等待),inactive = 关闭
+  (视为不存在)。
+- 输入信号来源:显式信号线(以信号线为准)或上游输出信号的自动传导;
+- 输出信号对数据节点只有一条自动传导(对应输入组全关 → 输出关闭);
+- 信号逻辑只在信号节点(声明控制输出端口的节点)内显式处理,数据节点实现
+  永远不触碰信号。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
-
 from ..model.types import ACTIVE, INACTIVE, Level  # noqa: F401  单一事实来源
 
-__all__ = ["ACTIVE", "INACTIVE", "Level", "DataPacket"]
-
-
-@dataclass(frozen=True)
-class DataPacket:
-    """沿数据连线流动的不可变数据包:载荷任意 Python 对象(类型鸭子,运行时零强制)。"""
-
-    payload: Any
-    source: str  # "节点id.端口名"
-    tick: int    # 产生轮次
-
-    def to_dict(self) -> dict:
-        return {"payload": self.payload, "source": self.source, "tick": self.tick}
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "DataPacket":
-        return cls(payload=d["payload"], source=d["source"], tick=d["tick"])
+__all__ = ["ACTIVE", "INACTIVE", "Level"]

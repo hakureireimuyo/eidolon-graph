@@ -13,7 +13,7 @@ from .assets import AssetLibrary, ConstAsset, GenericAsset, GlobalVar, ServiceAs
 from .graph import Graph, NodeInstance
 from .node import ImplBinding, NodeType
 from .types import (ACTIVE, INACTIVE, TYPE_NOT_SET, Annot, ConfigField, ControlIn,
-                    ControlOut, DataIn, DataOut, StateField, Wire)
+                    ControlOut, DataIn, DataOut, InputGroup, StateField, Wire)
 from .validate import ValidationError, ValidationReport, validate
 from .version import KERNEL_VERSION, compatible
 from . import serialize
@@ -22,7 +22,7 @@ __all__ = [
     "KERNEL_VERSION", "compatible",
     "ACTIVE", "INACTIVE", "TYPE_NOT_SET",
     "Annot", "DataIn", "DataOut", "ControlIn", "ControlOut",
-    "StateField", "ConfigField", "Wire",
+    "InputGroup", "StateField", "ConfigField", "Wire",
     "ImplBinding", "NodeType", "NodeInstance", "Graph",
     "GlobalVar", "ConstAsset", "ServiceAsset", "GenericAsset", "AssetLibrary",
     "ValidationReport", "ValidationError", "validate",

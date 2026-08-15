@@ -1,7 +1,7 @@
 """编辑事务与状态迁移:编辑 = 停止世界的事务,校验后原子提交。
 
 编辑事务 API 属于内核:edit_transaction(world, edits) → {validation, migration_plan}。
-tick 由宿主同步调用,事务天然位于轮界(没有"边改边迁"的中间态)。
+run 由宿主同步调用,事务天然位于两次运行之间(没有"边改边迁"的中间态)。
 
 原则:规则与事实分离——改图不动状态,除非显式删节点/换实现。
 """
@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from ..model import Graph, NodeInstance, NodeType, ValidationReport, Wire, validate
+from .protocol import NodeImpl
+from .rng import Rng, derive_seed
 from .runtime import CompiledGraph, NodeState, World
 from .subgraph import SubgraphNodeImpl
 
@@ -113,10 +115,12 @@ class ReimplementRecord:
 @dataclass
 class MigrationPlan:
     kept: list[str] = field(default_factory=list)              # 状态保留的节点
-    added: list[str] = field(default_factory=list)             # 新节点(初始状态)
+    added: list[str] = field(default_factory=list)             # 新节点(初始化后)
     removed: list[str] = field(default_factory=list)           # 状态销毁的节点
     rewarmed: list[tuple[str, str]] = field(default_factory=list)
-    # 失去值来源的端口:数据端口重归未就绪(重新 warm-up),控制端口回默认电平
+    # 失去值来源的数据端口:缓冲重置,重新等待新值
+    rewarmed_control: list[tuple[str, str]] = field(default_factory=list)
+    # 失去来源的控制输入:电平回默认
     reimplemented: list[ReimplementRecord] = field(default_factory=list)
     edges_removed: list[Wire] = field(default_factory=list)    # RemoveNode 级联删除的连线
 
@@ -129,13 +133,17 @@ class EditResult:
 
 
 def _protocol_compatible(old: NodeType, new: NodeType) -> bool:
-    """同协议 = 端口集合与状态字段(名/序)一致。配置不参与(属资产侧)。"""
+    """同协议 = 端口集合、输入组、初始化输入、状态字段(名/序)一致。配置不参与(属资产侧)。"""
     return (
         [p.name for p in old.data_in] == [p.name for p in new.data_in]
         and [p.name for p in old.data_out] == [p.name for p in new.data_out]
-        and [(c.name, c.semantic, c.target) for c in old.control_in]
-        == [(c.name, c.semantic, c.target) for c in new.control_in]
+        and [(c.name, c.semantic) for c in old.control_in]
+        == [(c.name, c.semantic) for c in new.control_in]
         and [c.name for c in old.control_out] == [c.name for c in new.control_out]
+        and [(g.name, tuple(g.inputs), tuple(g.outputs)) for g in old.groups]
+        == [(g.name, tuple(g.inputs), tuple(g.outputs)) for g in new.groups]
+        and list(old.init_in) == list(new.init_in)
+        and old.auto == new.auto
         and [f.name for f in old.state] == [f.name for f in new.state]
     )
 
@@ -154,9 +162,10 @@ def edit_transaction(world: World, ops: list[EditOp]) -> EditResult:
 def _compute_plan(world: World, draft: Graph, ops: list[EditOp]) -> MigrationPlan:
     plan = MigrationPlan()
     old_ids = set(world._node_map)
-    # 连线集合发生变化的端口(增/删/级联):失去旧来源 → 就绪重置(重新 warm-up)。
-    # 换源在一个事务内完成([RemoveEdge, AddEdge])同样重置——旧源的 held 值不能混入新源。
+    # 连线集合发生变化的端口(增/删/级联):失去旧来源 → 缓冲重置。
+    # 换源在一个事务内完成([RemoveEdge, AddEdge])同样重置——旧源的缓冲值不能混入新源。
     touched: set[tuple[str, str]] = set()
+    touched_control: set[tuple[str, str]] = set()
     for op in ops:
         if isinstance(op, AddNode):
             plan.added.append(op.node.node_id)
@@ -165,15 +174,22 @@ def _compute_plan(world: World, draft: Graph, ops: list[EditOp]) -> MigrationPla
             for w in world.graph.wires:
                 if w.src_node == op.node_id or w.dst_node == op.node_id:
                     plan.edges_removed.append(w)
-            # 级联断线同样触发就绪重置(目标节点存活的端口)
+            # 级联断线同样触发重置(目标节点存活的端口)
             for w in world.graph.wires:
                 if w.src_node != op.node_id or w.dst_node == op.node_id:
                     continue
-                touched.add((w.dst_node, w.dst_port))
+                if w.dst_slot == "data":
+                    touched.add((w.dst_node, w.dst_port))
+                elif w.dst_port in world.compiled.types[w.dst_node].control_in_map():
+                    touched_control.add((w.dst_node, w.dst_port))
         elif isinstance(op, RemoveEdge):
-            touched.add((op.wire.dst_node, op.wire.dst_port))
+            if op.wire.dst_slot == "data":
+                touched.add((op.wire.dst_node, op.wire.dst_port))
+            elif op.wire.dst_port in world.compiled.types[op.wire.dst_node].control_in_map():
+                touched_control.add((op.wire.dst_node, op.wire.dst_port))
         elif isinstance(op, AddEdge):
-            touched.add((op.wire.dst_node, op.wire.dst_port))
+            if op.wire.dst_slot == "data":
+                touched.add((op.wire.dst_node, op.wire.dst_port))
         elif isinstance(op, ChangeImpl):
             nid = op.node_id
             old_nt = world.compiled.types[nid]
@@ -190,6 +206,9 @@ def _compute_plan(world: World, draft: Graph, ops: list[EditOp]) -> MigrationPla
     for (nid, port) in touched:
         if nid in surviving:
             plan.rewarmed.append((nid, port))
+    for (nid, port) in touched_control:
+        if nid in surviving:
+            plan.rewarmed_control.append((nid, port))
     plan.kept = sorted(old_ids - set(plan.removed))
     return plan
 
@@ -203,12 +222,13 @@ def _apply_migration(world: World, draft: Graph, plan: MigrationPlan, op_count: 
     reimpl = {r.node_id: r for r in plan.reimplemented}
     old_states = world._states
     new_states: dict[str, NodeState] = {}
-    new_impls: dict[str, Any] = {}
+    new_impls: dict[str, NodeImpl] = {}
     stack = (draft.name,)
     for ni in draft.nodes:
         nid = ni.node_id
         nt = world.compiled.types[nid]
         st: NodeState
+        impl: NodeImpl
         if nid in old_states and nid not in removed:
             st = old_states[nid]
             if nid in reimpl:
@@ -219,52 +239,70 @@ def _apply_migration(world: World, draft: Graph, plan: MigrationPlan, op_count: 
                     st.state = world.impl_migrations[nt.name](deepcopy(st.state), nt)
                 else:
                     st.state = nt.default_state()
+                    st.initialized = False  # 重置后重新初始化(__init__)
+            if nid in reimpl:
                 st.inner = None  # 换实现后旧内嵌世界作废(V1:子图状态不迁移)
             if nt.impl.kind == "subgraph" and st.inner is None:
-                st.inner = world._build_inner(nt, stack)
+                st.inner = world._build_inner(ni, nt, stack)
+            impl = (SubgraphNodeImpl(nt) if nt.impl.kind == "subgraph"
+                    else world.registry.get(nt.impl.name or nt.name)())
         else:
-            st = NodeState(state=nt.default_state())
+            st = NodeState(state=nt.default_state(), initialized=not bool(nt.init_in))
             if nt.impl.kind == "subgraph":
-                st.inner = world._build_inner(nt, stack)
+                st.inner = world._build_inner(ni, nt, stack)
+            impl = (SubgraphNodeImpl(nt) if nt.impl.kind == "subgraph"
+                    else world.registry.get(nt.impl.name or nt.name)())
         new_states[nid] = st
-        new_impls[nid] = (SubgraphNodeImpl(nt) if nt.impl.kind == "subgraph"
-                          else world.registry.get(nt.impl.name or nt.name)())
+        new_impls[nid] = impl
     world._states = new_states
     world._impls = new_impls
+    # 每节点独立随机流:新节点按 (世界种子, 节点 id) 派生,老节点流不重建
+    for nid in new_states:
+        if nid not in world.rngs:
+            world.rngs[nid] = Rng(derive_seed(world.seed, nid))
+    for nid in list(world.rngs):
+        if nid not in new_states:
+            del world.rngs[nid]
 
-    # 2) held 表迁移:剪除消失的节点/端口;失去来源的端口就绪重置
+    # 2) 缓冲/电平表迁移:剪除消失的端口;失去来源的端口重置(数据缓冲清空、控制电平回默认)
     rewarm_set = set(plan.rewarmed)
-    new_dih: dict[tuple[str, str], Any] = {}
-    new_cih: dict[tuple[str, str], str] = {}
-    new_doh: dict[tuple[str, str], Any] = {}
-    new_coh: dict[tuple[str, str], str] = {}
-    for (nid, port), pkt in world.data_in_held.items():
-        if nid in new_states and port in world.compiled.types[nid].data_in_map() \
-                and (nid, port) not in rewarm_set:
-            new_dih[(nid, port)] = pkt
-    for (nid, port), pkt in world.data_out_held.items():
-        if nid in new_states and port in world.compiled.types[nid].data_out_map():
-            new_doh[(nid, port)] = pkt
-    for (nid, port), lvl in world.control_in_held.items():
-        if nid in new_states and port in world.compiled.types[nid].control_in_map() \
-                and (nid, port) not in rewarm_set:
-            new_cih[(nid, port)] = lvl
-    for (nid, port), lvl in world.control_out_held.items():
-        if nid in new_states and port in world.compiled.types[nid].control_out_map():
-            new_coh[(nid, port)] = lvl
+    rewarm_ctrl_set = set(plan.rewarmed_control)
+    for nid in new_states:
+        nt = world.compiled.types[nid]
+        declared_ins = set(nt.data_in_map())
+        st = new_states[nid]
+        st.buffers = {p: v for p, v in st.buffers.items()
+                      if p in declared_ins and (nid, p) not in rewarm_set}
+        st.fresh = {p for p in st.fresh
+                    if p in declared_ins and (nid, p) not in rewarm_set}
+    world.control_in_levels = {(nid, port): lvl for (nid, port), lvl
+                               in world.control_in_levels.items()
+                               if nid in new_states and port in
+                               world.compiled.types[nid].control_in_map()
+                               and (nid, port) not in rewarm_ctrl_set}
+    world.control_out_levels = {(nid, port): lvl for (nid, port), lvl
+                                in world.control_out_levels.items()
+                                if nid in new_states and port in
+                                world.compiled.types[nid].control_out_map()}
+    world.output_signals = {(nid, port): lvl for (nid, port), lvl
+                            in world.output_signals.items()
+                            if nid in new_states and port in
+                            world.compiled.types[nid].data_out_map()}
     for nid in new_states:
         nt = world.compiled.types[nid]
         for c in nt.control_in:
-            new_cih.setdefault((nid, c.name), c.effective_default())
+            world.control_in_levels.setdefault((nid, c.name), c.effective_default())
         for c in nt.control_out:
-            new_coh.setdefault((nid, c.name), c.default_level)
-    world.data_in_held = new_dih
-    world.control_in_held = new_cih
-    world.data_out_held = new_doh
-    world.control_out_held = new_coh
+            world.control_out_levels.setdefault((nid, c.name), c.default_level)
+        for p in nt.data_out:
+            world.output_signals.setdefault((nid, p.name), "active")
 
-    # 3) 日志记录(只追加的历史)
-    world.log.append({"tick": world.tick_no, "level": "edit",
+    # 3) 初始化输入(__init__):新节点/重置节点绑定齐备的立即执行,连线的等待上游首值
+    for ni in draft.nodes:
+        world._try_init(ni.node_id)
+
+    # 4) 日志记录(只追加的历史)
+    world.log.append({"run": world.run_no, "level": "edit",
                       "message": f"编辑提交:{op_count} 个操作,"
                                  f"删除 {len(plan.removed)} 节点,"
                                  f"重置 {len(plan.rewarmed)} 端口"})

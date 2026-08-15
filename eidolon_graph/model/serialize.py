@@ -15,7 +15,7 @@ from .assets import (AssetLibrary, ConstAsset, GenericAsset, GlobalVar, ServiceA
 from .graph import Graph, NodeInstance
 from .node import ImplBinding, NodeType
 from .types import (TYPE_NOT_SET, Annot, ConfigField, ControlIn, ControlOut, DataIn,
-                    DataOut, StateField, Wire)
+                    DataOut, InputGroup, StateField, Wire)
 from .version import KERNEL_VERSION, compatible
 
 
@@ -49,13 +49,13 @@ def annot_from_dict(v: Any) -> Annot:
 def data_in_to_dict(p: DataIn) -> dict:
     return {"name": p.name, "type": annot_to_dict(p.type_annot),
             "const_set": p.const_set, "const": p.const,
-            "global_read": p.global_read, "state_write": p.state_write}
+            "global_read": p.global_read}
 
 
 def data_in_from_dict(d: dict) -> DataIn:
     return DataIn(name=d["name"], type_annot=annot_from_dict(d.get("type")),
                   const_set=d.get("const_set", False), const=d.get("const"),
-                  global_read=d.get("global_read"), state_write=d.get("state_write"))
+                  global_read=d.get("global_read"))
 
 
 def data_out_to_dict(p: DataOut) -> dict:
@@ -68,13 +68,21 @@ def data_out_from_dict(d: dict) -> DataOut:
 
 
 def control_in_to_dict(c: ControlIn) -> dict:
-    return {"name": c.name, "semantic": c.semantic, "target": c.target,
-            "default_level": c.default_level}
+    return {"name": c.name, "semantic": c.semantic, "default_level": c.default_level}
 
 
 def control_in_from_dict(d: dict) -> ControlIn:
     return ControlIn(name=d["name"], semantic=d.get("semantic", "enable"),
-                     target=d.get("target"), default_level=d.get("default_level"))
+                     default_level=d.get("default_level"))
+
+
+def input_group_to_dict(g: InputGroup) -> dict:
+    return {"name": g.name, "inputs": list(g.inputs), "outputs": list(g.outputs)}
+
+
+def input_group_from_dict(d: dict) -> InputGroup:
+    return InputGroup(name=d["name"], inputs=list(d.get("inputs", [])),
+                      outputs=list(d.get("outputs", [])))
 
 
 def control_out_to_dict(c: ControlOut) -> dict:
@@ -110,12 +118,14 @@ def config_field_from_dict(d: dict) -> ConfigField:
 
 def wire_to_dict(w: Wire) -> dict:
     return {"src_node": w.src_node, "src_port": w.src_port,
-            "dst_node": w.dst_node, "dst_port": w.dst_port}
+            "dst_node": w.dst_node, "dst_port": w.dst_port,
+            "dst_slot": w.dst_slot}
 
 
 def wire_from_dict(d: dict) -> Wire:
     return Wire(src_node=d["src_node"], src_port=d["src_port"],
-                dst_node=d["dst_node"], dst_port=d["dst_port"])
+                dst_node=d["dst_node"], dst_port=d["dst_port"],
+                dst_slot=d.get("dst_slot", "data"))
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +150,9 @@ def node_type_to_dict(nt: NodeType) -> dict:
             "control_out": [control_out_to_dict(c) for c in nt.control_out],
             "state": [state_field_to_dict(f) for f in nt.state],
             "config": [config_field_to_dict(f) for f in nt.config],
+            "groups": [input_group_to_dict(g) for g in nt.groups],
+            "init_in": list(nt.init_in),
+            "auto": nt.auto,
             "impl": impl_binding_to_dict(nt.impl)}
 
 
@@ -151,6 +164,9 @@ def node_type_from_dict(d: dict) -> NodeType:
                     control_out=[control_out_from_dict(x) for x in d.get("control_out", [])],
                     state=[state_field_from_dict(x) for x in d.get("state", [])],
                     config=[config_field_from_dict(x) for x in d.get("config", [])],
+                    groups=[input_group_from_dict(x) for x in d.get("groups", [])],
+                    init_in=list(d.get("init_in", [])),
+                    auto=bool(d.get("auto", False)),
                     impl=impl_binding_from_dict(d.get("impl", {})))
 
 
