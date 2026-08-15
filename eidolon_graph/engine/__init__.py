@@ -12,7 +12,7 @@
 from .edit import (AddEdge, AddNode, ChangeImpl, EditOp, EditResult, MigrationPlan,
                    ReimplementRecord, RemoveEdge, RemoveNode, SetConfig, apply_edits,
                    edit_transaction)
-from .protocol import InitContext, NodeImpl, TickContext, TickOutput
+from .protocol import InitContext, NodeImpl, ScheduleContext, TickContext, TickOutput
 from .registry import NodeRegistry
 from .rng import Rng, derive_seed
 from .runtime import CompiledGraph, Event, NodeState, World
@@ -24,7 +24,7 @@ from . import builtins
 __all__ = [
     "ACTIVE", "INACTIVE",
     "Rng", "derive_seed",
-    "NodeImpl", "TickContext", "TickOutput", "InitContext",
+    "NodeImpl", "TickContext", "TickOutput", "InitContext", "ScheduleContext",
     "NodeRegistry",
     "CompiledGraph", "NodeState", "World", "Event",
     "NodeSnapshot", "Snapshot", "capture", "restore_world",

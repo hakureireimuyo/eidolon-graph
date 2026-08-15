@@ -8,18 +8,23 @@
   只由自动传导决定(对应输入组全关 → 输出关闭,实现永不写信号),但信号端口可
   显式拉线到任意信号接收端(显式路由);信号逻辑只在信号节点内;
 - 每节点独立随机流(世界种子 + 节点 id 派生),声明序即执行序,同一图同一输入
-  序列结果唯一。
+  序列结果唯一;
+- 实时模式(realtime=True):世界自驱——源节点按自身发射规则(impl.schedule)
+  定时发事件,引擎后台线程调度单遍执行;事件源 = 节点,宿主不伪造事件。
+  同步模式(默认)不变:宿主调用 run(events),确定性可复现。
 """
 
 from __future__ import annotations
 
+import threading
+import time
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from ..model import (ACTIVE, INACTIVE, AssetLibrary, Graph, NodeInstance, NodeType,
                      ValidationError, ValidationReport, validate)
-from .protocol import InitContext, NodeImpl, TickContext, TickOutput
+from .protocol import InitContext, NodeImpl, ScheduleContext, TickContext, TickOutput
 from .registry import NodeRegistry
 from .rng import Rng, derive_seed
 from .subgraph import SubgraphNodeImpl
@@ -89,6 +94,7 @@ class World:
     def __init__(self, lib: AssetLibrary, graph: Graph, registry: NodeRegistry,
                  seed: int = 0,
                  fuse_limit: int = 5, fuse_cool_ticks: int = 10,
+                 realtime: bool = False,
                  _stack: tuple[str, ...] = ()) -> None:
         self.lib = lib
         self.registry = registry
@@ -101,6 +107,13 @@ class World:
         self._node_map = graph.node_map()
         self.run_no = 0
         self.seed = seed
+        # 实时模式:后台调度线程 + 线程锁(run/快照/编辑串行化;同步模式锁无竞争)
+        self._realtime = realtime
+        self._lock = threading.Lock()
+        self._sched_thread: threading.Thread | None = None
+        self._sched_stop = threading.Event()
+        # 源节点下次发射时刻(monotonic 秒);0.0 = 永远到期(每轮发射 / 首轮立即)
+        self._next_due: dict[str, float] = {}
         # 每节点独立随机流(世界种子 + 节点 id 派生):加节点不改他人轨迹
         self.rngs: dict[str, Rng] = {ni.node_id: Rng(derive_seed(seed, ni.node_id))
                                      for ni in graph.nodes}
@@ -166,14 +179,101 @@ class World:
     # ------------------------------------------------------------------
 
     def run(self, events: list[Event] | None = None) -> None:
-        """注入事件 → 按节点声明序单遍执行 → 静止。原子操作。"""
-        self.run_no += 1
-        self.run_outputs = {}
-        if events:
-            for ev in events:
-                self._deliver(ev)
-        for ni in self.graph.nodes:
-            self._node_turn(ni.node_id)
+        """注入事件 → 按节点声明序单遍执行 → 静止。原子操作。
+
+        同步模式:宿主调用;实时模式:由调度线程按源节点发射时刻调用。
+        """
+        with self._lock:
+            self.run_no += 1
+            self.run_outputs = {}
+            if events:
+                for ev in events:
+                    self._deliver(ev)
+            for ni in self.graph.nodes:
+                self._node_turn(ni.node_id)
+
+    # ------------------------------------------------------------------
+    # 实时调度(事件源 = 节点自身,引擎不硬编码节奏)
+    # ------------------------------------------------------------------
+
+    def start(self) -> None:
+        """启动实时运行:后台线程按源节点的发射规则调度单遍执行。
+
+        有周期(schedule 返回秒数)的源节点首轮立即发射、之后按周期;
+        无周期(None)的源节点不唤醒调度——仅在单遍执行时顺带发射。
+        """
+        if not self._realtime:
+            raise RuntimeError("实时调度仅在 realtime=True 的世界可用")
+        if self._sched_thread is not None:
+            return
+        with self._lock:
+            for ni in self.graph.nodes:
+                nid = ni.node_id
+                if not self.compiled.types[nid].is_source():
+                    continue
+                nt = self.compiled.types[nid]
+                ctx = ScheduleContext(state=self._states[nid].state,
+                                      config=nt.resolve_config(self._node_map[nid].config))
+                if self._impls[nid].schedule(ctx) is not None:
+                    self._next_due[nid] = 0.0  # 首轮立即到期
+        self._sched_stop.clear()
+        self._sched_thread = threading.Thread(target=self._sched_loop,
+                                              name="eidolon-graph-sched", daemon=True)
+        self._sched_thread.start()
+
+    def stop(self) -> None:
+        """停止实时运行:调度线程退出,世界静止(快照/编辑安全)。"""
+        self._sched_stop.set()
+        if self._sched_thread is not None:
+            self._sched_thread.join(timeout=2)
+            self._sched_thread = None
+
+    def _sched_loop(self) -> None:
+        """调度循环:等到任一源节点发射时刻 → 单遍执行(执行中重查各源下一时刻)。"""
+        while not self._sched_stop.is_set():
+            with self._lock:
+                # 清理编辑后消失节点的陈旧条目(自愈)
+                self._next_due = {n: t for n, t in self._next_due.items()
+                                  if n in self._node_map}
+                now = time.monotonic()
+                if any(t <= now for t in self._next_due.values()):
+                    deadline: float | None = now
+                elif self._next_due:
+                    deadline = min(self._next_due.values())
+                else:
+                    deadline = None  # 无源节点:世界空转,只等停止信号
+            if deadline is None:
+                self._sched_stop.wait(1.0)
+                continue
+            wait = deadline - time.monotonic()
+            if wait > 0:
+                self._sched_stop.wait(wait)
+                continue
+            self.run()
+
+    def _source_due(self, nid: str) -> bool:
+        """实时模式下源节点是否到发射时刻。
+
+        登记了周期(在 _next_due 中)→ 到期才发射;未登记(None 调度)→ 每个
+        单遍都发射(不主动唤醒调度,仅随其他节点的发射顺带执行)。
+        """
+        if not self._realtime:
+            return True
+        due = self._next_due.get(nid)
+        return due is None or due <= time.monotonic()
+
+    def _reschedule(self, nid: str) -> None:
+        """发射后重查源节点下一时刻:schedule 返回秒数 = 周期;None = 每遍发射。"""
+        if not self._realtime:
+            return
+        nt = self.compiled.types[nid]
+        ctx = ScheduleContext(state=self._states[nid].state,
+                              config=nt.resolve_config(self._node_map[nid].config))
+        delay = self._impls[nid].schedule(ctx)
+        if delay is None:
+            self._next_due.pop(nid, None)
+        else:
+            self._next_due[nid] = time.monotonic() + max(float(delay), 0.01)
 
     def _deliver(self, ev: Event) -> None:
         st = self._states[ev.node]
@@ -201,9 +301,12 @@ class World:
                 self._update_output_signals(nid)
                 return
             # 冷却归零:半开,尝试执行一次(成功复位,失败重新熔断)
-        # 3) 源节点:每轮运行执行一次
+        # 3) 源节点:同步模式每轮执行;实时模式按自身发射规则到期执行
+        #    (None 调度 = 每轮发射;发射后按最新状态重查下一时刻)
         if nt.is_source():
-            self._fire(nid, nt, st, group="step", ports=())
+            if self._source_due(nid):
+                self._fire(nid, nt, st, group="step", ports=())
+                self._reschedule(nid)
         # 4) 输入组:组声明序;触发只看未绑定的连线输入(绑定端口仅作值源)
         for g in nt.groups:
             wired = [p for p in g.inputs
@@ -409,13 +512,16 @@ class World:
 
     def snapshot(self) -> Any:
         from .snapshot import capture
-        return capture(self)
+        with self._lock:
+            return capture(self)
 
     def restore(self, snap: Any) -> None:
         from .snapshot import restore_world
-        restore_world(self, snap)
+        with self._lock:
+            restore_world(self, snap)
 
     def edit(self, ops: list) -> Any:
         """编辑事务:世界静止假设由宿主保证(run 同步调用,天然位于两次运行之间)。"""
         from .edit import edit_transaction
-        return edit_transaction(self, ops)
+        with self._lock:
+            return edit_transaction(self, ops)

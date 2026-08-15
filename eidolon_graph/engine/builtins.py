@@ -46,6 +46,12 @@ class ClockImpl(NodeImpl):
         # set_rate:参数调制(普通方法,写状态,无输出)
         return TickOutput(state={"rate": ctx.data_in.get("rate")})
 
+    def schedule(self, ctx) -> float:
+        """实时发射周期:每秒 rate 次(默认 rate=1 → 每秒一次);rate 可被
+        set_rate 组调制,每次发射后按最新状态重查。"""
+        rate = float(ctx.state.get("rate", 1) or 1)
+        return 1.0 / max(rate, 0.01)
+
 
 # ---------------------------------------------------------------------------
 # Counter 计数器:组 [increment] → [count];屏蔽 increment 端口信号 = 计数暂停

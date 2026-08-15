@@ -699,3 +699,43 @@ def test_extra_data_out_signal_wire_masks_data_in():
     assert w1.control_in_levels[("clock", "enable")] == INACTIVE
     assert w1._states["printer"].state["last_msg"] == 1
     assert w2._states["printer"].state["last_msg"] == 2
+
+
+# ---------------------------------------------------------------------------
+# 补充:实时调度——事件源 = 节点自身(引擎不硬编码节奏)
+# ---------------------------------------------------------------------------
+
+def test_extra_realtime_schedule():
+    """实时模式:源节点按自身发射规则发事件(Clock 每秒 rate 次),停止后世界静止。"""
+    import time as _time
+    lib, registry = make_env()
+    # ClockImpl.schedule:rate=1 → 周期 1s;rate 调制后按最新状态重查
+    from eidolon_graph.engine import ScheduleContext
+    impl = registry.get("Clock")()
+    assert impl.schedule(ScheduleContext(state={"rate": 1}, config={})) == 1.0
+    assert impl.schedule(ScheduleContext(state={"rate": 2}, config={})) == 0.5
+
+    # 实时世界:Clock → Counter;启动即发第一次事件,之后按周期推进
+    g = Graph(name="rt", nodes=[NodeInstance("clock", "Clock"),
+                                NodeInstance("counter", "Counter")],
+              wires=[Wire("clock", "count", "counter", "increment")])
+    w = World(lib, g, registry, seed=0, realtime=True)
+    w.start()
+    deadline = _time.monotonic() + 3.0
+    while w.run_no < 1 and _time.monotonic() < deadline:
+        _time.sleep(0.05)
+    assert w.run_no >= 1  # 启动后立即发第一次事件
+    c1 = w._states["counter"].state["count"]
+    deadline = _time.monotonic() + 2.0
+    while w._states["counter"].state["count"] == c1 and _time.monotonic() < deadline:
+        _time.sleep(0.05)
+    assert w._states["counter"].state["count"] >= c1 + 1  # 下一个周期(1s)继续发射
+    w.stop()
+    rn = w.run_no
+    _time.sleep(1.1)
+    assert w.run_no == rn  # 停止后世界静止
+
+    # 同步模式不受影响:无实时调度时 run() 仍每轮执行源节点
+    w2 = World(lib, g, registry, seed=0)
+    w2.run()
+    assert w2._states["clock"].state["count"] == 1

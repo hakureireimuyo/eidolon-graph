@@ -3,7 +3,11 @@
 节点 = 类实例:初始化输入 = __init__,输入组 = 方法,输出组 = 方法返回值。
 实现者声明接口契约(NodeType 资产)并实现:
 - init(ctx) → 初始状态增量(可选;与状态字段默认值合并);
-- tick(ctx) → TickOutput(按组调用,ctx.group 区分方法)。
+- tick(ctx) → TickOutput(按组调用,ctx.group 区分方法);
+- schedule(ctx) → 实时模式的发射周期(可选;None = 每轮发射,默认)。
+
+实时调度:源节点的发射规则属于节点自身(Clock 按 rate 每秒发一次),引擎不
+硬编码任何节奏——事件源 = 节点,宿主不伪造事件。
 
 基类 final 方法(不可重载,由运行时保证):
 - 触发判定、组缓冲(一格覆盖、触发清零);
@@ -59,6 +63,14 @@ class InitContext:
     inner: Any = None           # 子图节点:内嵌世界
 
 
+@dataclass
+class ScheduleContext:
+    """实时发射调度上下文:源节点查询自己的发射周期(时钟、随机源等)。"""
+
+    state: dict[str, Any]       # 当前状态
+    config: dict[str, Any]      # 只读配置
+
+
 class NodeImpl(ABC):
     """节点实现协议:实现节点协议 = 注册为能力,运行时只认接口不认实现。"""
 
@@ -70,3 +82,11 @@ class NodeImpl(ABC):
     def tick(self, ctx: TickContext) -> TickOutput:
         """转移函数(方法):读本组输入/改状态/写输出;处理不了的输入抛异常即可(引擎异常策略接管)。"""
         raise NotImplementedError
+
+    def schedule(self, ctx: ScheduleContext) -> float | None:
+        """实时模式发射调度:返回距下次自发事件的秒数;None = 每轮发射(默认)。
+
+        发射规则属于节点自身(如 Clock 按 rate 每秒一次)——引擎不硬编码节奏,
+        事件源 = 节点。每次发射后按最新状态重查。
+        """
+        return None
