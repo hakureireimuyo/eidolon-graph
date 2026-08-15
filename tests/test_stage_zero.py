@@ -859,6 +859,23 @@ def test_extra_join_multi_input():
     assert w3._states["printer"].state["last_msg"] == "甲|乙"
 
 
+def test_input_same_value_reinject_fires():
+    """Input 同值重复注入同样触发:注入即新鲜事件,与值是否变化无关。
+
+    手动输入是宿主事件——每次点击输入键都是新事件,内核不做值去重
+    (数据到达即新鲜;去重会吞掉第二次点击)。
+    """
+    lib, registry = make_env()
+    g = Graph(name="reinject", nodes=[NodeInstance("i1", "Input"),
+                                      NodeInstance("counter", "Counter")],
+              wires=[Wire("i1", "out", "counter", "increment")])
+    w = World(lib, g, registry, seed=0)
+    w.run([Event("i1", "in", 5)])
+    assert w._states["counter"].state["count"] == 5
+    w.run([Event("i1", "in", 5)])  # 同值再注入:仍是新鲜事件,再次触发
+    assert w._states["counter"].state["count"] == 10
+
+
 def test_extra_buffer_consumed_after_fire():
     """缓冲是数据的临时存储:组触发后输入被消费——缓冲清空(瞬态事件语义)。"""
     lib, registry = make_env()
