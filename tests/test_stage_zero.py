@@ -808,3 +808,40 @@ def test_extra_random_function():
     assert w2._states["printer"].state["last_msg"] == Rng(derive_seed(7, "1")).next_int(10)
     w2.run([Event("r1", "seed", 3), Event("r1", "num", 5)])  # 接线覆盖配置默认
     assert w2._states["printer"].state["last_msg"] == Rng(derive_seed(3, "5")).next_int(10)
+
+
+def test_extra_join_multi_input():
+    """Join 双输入单输出:不同时期到达的数据——全部有效连线输入有新值才触发;
+    一格缓冲新值覆盖;触发后消费清零,重新等待全套新值。"""
+    lib, registry = make_env()
+    # 同轮到达:两个时钟同轮各发一次 → a/b 都新鲜 → 触发
+    g = Graph(name="join", nodes=[NodeInstance("c1", "Clock"),
+                                  NodeInstance("c2", "Clock"),
+                                  NodeInstance("j1", "Join"),
+                                  NodeInstance("printer", "Printer")],
+              wires=[Wire("c1", "count", "j1", "a"),
+                     Wire("c2", "count", "j1", "b"),
+                     Wire("j1", "out", "printer", "msg")])
+    w = World(lib, g, registry, seed=0)
+    w.run()
+    assert w._states["printer"].state["last_msg"] == "1|1"
+
+    # 不同时期到达(经 Input 注入):只有 a 时等待;b 到达后触发
+    g2 = Graph(name="join2", nodes=[NodeInstance("i1", "Input"),
+                                    NodeInstance("i2", "Input"),
+                                    NodeInstance("j1", "Join"),
+                                    NodeInstance("printer", "Printer")],
+               wires=[Wire("i1", "out", "j1", "a"),
+                      Wire("i2", "out", "j1", "b"),
+                      Wire("j1", "out", "printer", "msg")])
+    w2 = World(lib, g2, registry, seed=0)
+    w2.run([Event("i1", "in", 1)])  # 只有 a=1:等待,不输出
+    assert w2._states["printer"].state["last_msg"] is None
+    w2.run([Event("i1", "in", 2)])  # a=2 覆盖旧值(一格缓冲,新值覆盖)
+    assert w2._states["printer"].state["last_msg"] is None
+    w2.run([Event("i2", "in", "x")])  # b 到达:全部新鲜 → 输出 a|b
+    assert w2._states["printer"].state["last_msg"] == "2|x"
+    w2.run([Event("i2", "in", "y")])  # a 已消费:只有 b 新鲜 → 继续等待
+    assert w2._states["printer"].state["last_msg"] == "2|x"
+    w2.run([Event("i1", "in", 3)])  # a=3 到达:再次触发
+    assert w2._states["printer"].state["last_msg"] == "3|y"
