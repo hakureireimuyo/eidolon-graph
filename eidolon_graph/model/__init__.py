@@ -8,3 +8,23 @@
 
 不负责:tick 执行、调度、快照、RNG —— 见 eidolon_graph.engine。
 """
+
+from .assets import AssetLibrary, ConstAsset, GenericAsset, GlobalVar, ServiceAsset
+from .graph import Graph, NodeInstance
+from .node import ImplBinding, NodeType
+from .types import (ACTIVE, INACTIVE, TYPE_NOT_SET, Annot, ConfigField, ControlIn,
+                    ControlOut, DataIn, DataOut, StateField, Wire)
+from .validate import ValidationError, ValidationReport, validate
+from .version import KERNEL_VERSION, compatible
+from . import serialize
+
+__all__ = [
+    "KERNEL_VERSION", "compatible",
+    "ACTIVE", "INACTIVE", "TYPE_NOT_SET",
+    "Annot", "DataIn", "DataOut", "ControlIn", "ControlOut",
+    "StateField", "ConfigField", "Wire",
+    "ImplBinding", "NodeType", "NodeInstance", "Graph",
+    "GlobalVar", "ConstAsset", "ServiceAsset", "GenericAsset", "AssetLibrary",
+    "ValidationReport", "ValidationError", "validate",
+    "serialize",
+]

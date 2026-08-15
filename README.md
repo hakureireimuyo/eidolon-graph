@@ -20,3 +20,28 @@ eidolon_graph/
 - **资产格式先于编辑器存在**:本仓库 model 层是图资产格式的唯一来源。
 
 落地顺序见 `docs/graph-kernel-engineering.md`(阶段零最小验证闭环)。
+
+## 最小使用
+
+```python
+from eidolon_graph.model import AssetLibrary, Graph, NodeInstance, Wire
+from eidolon_graph.engine import NodeRegistry, World
+from eidolon_graph.engine.builtins import register_builtins
+
+lib, registry = AssetLibrary(), NodeRegistry()
+register_builtins(lib, registry)  # 内置逻辑元件;领域节点由宿主注册
+
+graph = Graph(name="demo", nodes=[NodeInstance("clock", "Clock"),
+                                  NodeInstance("counter", "Counter")],
+              wires=[Wire("clock", "count", "counter", "increment")])
+world = World(lib, graph, registry, seed=42)  # 构造时校验一遍(防绕过编辑器)
+
+for _ in range(10):
+    world.tick()          # 同步轮次:轮初读、轮末提交,顺序无关
+snap = world.snapshot()   # 轮界快照:状态 + held + 全局 + RNG
+world2 = World(lib, graph, registry)
+world2.restore(snap)      # 读档 = 精确续跑
+res = world.edit([...])   # 编辑事务:校验 → 原子迁移(改图不动事实)
+```
+
+验证:`pytest tests/ -v`(阶段零六个验收性质 + 屏蔽/全局/熔断/JSON 往返补充测试)。

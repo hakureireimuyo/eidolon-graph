@@ -10,4 +10,23 @@
 设计文档见 docs/。
 """
 
+from eidolon_graph.engine import World, NodeRegistry, NodeImpl, TickContext, TickOutput, Rng
+from eidolon_graph.model import (ACTIVE, INACTIVE, Annot, AssetLibrary, ConstAsset,
+                                 ConfigField, ControlIn, ControlOut, DataIn, DataOut,
+                                 GenericAsset, GlobalVar, Graph, ImplBinding,
+                                 KERNEL_VERSION, NodeInstance, NodeType, ServiceAsset,
+                                 StateField, ValidationError, ValidationReport, Wire,
+                                 validate)
+
 __version__ = "0.1.0"
+
+__all__ = [
+    "KERNEL_VERSION",
+    "Annot", "DataIn", "DataOut", "ControlIn", "ControlOut",
+    "StateField", "ConfigField", "Wire",
+    "ImplBinding", "NodeType", "NodeInstance", "Graph",
+    "GlobalVar", "ConstAsset", "ServiceAsset", "GenericAsset", "AssetLibrary",
+    "ValidationReport", "ValidationError", "validate",
+    "ACTIVE", "INACTIVE",
+    "World", "NodeRegistry", "NodeImpl", "TickContext", "TickOutput", "Rng",
+]
