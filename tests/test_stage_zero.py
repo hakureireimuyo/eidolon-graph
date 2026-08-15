@@ -742,7 +742,8 @@ def test_extra_realtime_schedule():
 
 
 def test_extra_realtime_pause_resume():
-    """实时暂停/恢复:暂停期间世界冻结(无发射);恢复后顺延继续;注入在暂停期仍可用。"""
+    """暂停 = 传播闸门(非冻结):源节点内部继续发射、状态继续更新,输出结果不
+    投递到下游;恢复时冲刷挂起投递并完成级联传递。"""
     import time as _time
     lib, registry = make_env()
     g = Graph(name="rt-pause", nodes=[NodeInstance("clock", "Clock"),
@@ -754,16 +755,12 @@ def test_extra_realtime_pause_resume():
     while w.run_no < 1 and _time.monotonic() < deadline:
         _time.sleep(0.05)
     assert w.run_no >= 1
+    assert w._states["counter"].state["count"] == 1
     w.pause()
-    rn = w.run_no
-    _time.sleep(1.1)  # 暂停期间世界冻结
-    assert w.run_no == rn
-    # 暂停期间注入仍可用:事件驱动不在乎事件从哪来
-    w.run([Event("clock", "rate", 2, kind="data")])
-    assert w.run_no == rn + 1
-    w.resume()
-    deadline = _time.monotonic() + 3.0
-    while w.run_no <= rn + 1 and _time.monotonic() < deadline:
-        _time.sleep(0.05)
-    assert w.run_no > rn + 1  # 恢复后继续发射
+    _time.sleep(1.3)  # 暂停期间 clock 内部继续发射(状态继续变),counter 冻结
+    clock_count = w._states["clock"].state["count"]
+    assert clock_count >= 2  # 内部仍在运行
+    assert w._states["counter"].state["count"] == 1  # 输出结果停住,未向后传播
+    w.resume()  # 冲刷挂起投递:counter 拿到最新 count,级联完成
+    assert w._states["counter"].state["count"] == 1 + clock_count
     w.stop()

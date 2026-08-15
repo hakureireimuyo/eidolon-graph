@@ -112,8 +112,13 @@ class World:
         self._lock = threading.Lock()
         self._sched_thread: threading.Thread | None = None
         self._sched_stop = threading.Event()
+        # 暂停 = 传播闸门:节点内部照常运行,输出投递被拦截(最新值挂起),
+        # 恢复时冲刷完成传递——不是世界冻结。
         self._paused = False
-        self._pause_start = 0.0
+        self._pending_data: dict[tuple[str, str], Any] = {}    # (源节点, 端口) → 挂起数据值
+        self._pending_ctrl: dict[tuple[str, str], str] = {}    # (源节点, 端口) → 挂起控制输出电平
+        self._pending_signal: dict[tuple[str, str], str] = {}  # (源节点, 端口) → 挂起数据输出信号电平
+        self._pending_global: dict[str, Any] = {}              # 全局名 → 挂起写入值
         # 源节点下次发射时刻(monotonic 秒);0.0 = 永远到期(每轮发射 / 首轮立即)
         self._next_due: dict[str, float] = {}
         # 每节点独立随机流(世界种子 + 节点 id 派生):加节点不改他人轨迹
@@ -221,28 +226,48 @@ class World:
         self._spawn_sched()
 
     def pause(self) -> None:
-        """暂停实时运行:调度线程退出,世界冻结(状态/信号/RNG 保留)。
+        """暂停 = 阻止事件向后传播(传播闸门,非世界冻结):
 
-        暂停期间注入(run(events))与快照仍可用;恢复时暂停时长不计入
-        发射周期(到期时刻顺延)。
+        节点内部照常运行(源节点继续发射、状态继续更新),但输出结果不投递到
+        下游——数据值/控制电平/全局写入按端口挂起(最新值覆盖)。恢复时冲刷
+        挂起投递并跑一遍完成级联传递。注入(run(events))在暂停期照常工作。
         """
-        self._sched_stop.set()
-        if self._sched_thread is not None:
-            self._sched_thread.join(timeout=2)
-            self._sched_thread = None
-        if not self._paused:
+        with self._lock:
             self._paused = True
-            self._pause_start = time.monotonic()
 
     def resume(self) -> None:
-        """恢复实时运行:发射时刻顺延暂停时长后重新调度。"""
+        """恢复:冲刷挂起的投递(数据→下游缓冲、控制→下游电平、全局写入),
+        再跑一遍把级联传递完成。"""
         if not self._paused:
             return
-        self._paused = False
         with self._lock:
-            shift = time.monotonic() - self._pause_start
-            self._next_due = {n: t + shift for n, t in self._next_due.items()}
-        self._spawn_sched()
+            self._paused = False
+            self._flush_pending()
+        self.run()  # 冲刷后的级联完成(投递已恢复,新产出正常传播)
+
+    def _flush_pending(self) -> None:
+        """冲刷暂停期挂起的投递(调用方持锁):最新值按端口覆盖。"""
+        for (nid, p), value in self._pending_data.items():
+            for (dn, dp, dslot) in self.compiled.out_edges.get((nid, p, "data"), []):
+                if dslot != "data":
+                    continue
+                dst = self._states[dn]
+                dst.buffers[dp] = value
+                dst.fresh.add(dp)
+        for (nid, c), lvl in self._pending_ctrl.items():
+            for (dn, dp, _dslot) in self.compiled.out_edges.get((nid, c, "signal"), []):
+                if dp in self.compiled.types[dn].control_in_map():
+                    self.control_in_levels[(dn, dp)] = lvl
+        for (nid, p), lvl in self._pending_signal.items():
+            for (dn, dp, dslot) in self.compiled.out_edges.get((nid, p, "data"), []):
+                if dslot == "signal" and dp in self.compiled.types[dn].control_in_map():
+                    self.control_in_levels[(dn, dp)] = lvl
+        for name, value in self._pending_global.items():
+            self.globals_[name] = value
+        self._pending_data.clear()
+        self._pending_ctrl.clear()
+        self._pending_signal.clear()
+        self._pending_global.clear()
 
     def stop(self) -> None:
         """停止实时运行:调度线程退出,世界静止(快照/编辑安全)。"""
@@ -430,6 +455,11 @@ class World:
         for p, value in out.data_out.items():
             self.run_outputs[(nid, p)] = value
             decl = nt.data_out_map()[p]
+            if self._paused:  # 传播闸门:产出挂起,不投递
+                self._pending_data[(nid, p)] = value
+                if decl.global_write is not None:
+                    self._pending_global[decl.global_write] = value
+                continue
             for (dn, dp, dslot) in self.compiled.out_edges.get((nid, p, "data"), []):
                 if dslot != "data":
                     continue
@@ -442,6 +472,9 @@ class World:
         # (连到数据端口信号的线不投递——下游输入信号按需从 control_out_levels 推导)
         for c, lvl in out.control_out.items():
             self.control_out_levels[(nid, c)] = lvl
+            if self._paused:  # 传播闸门:电平挂起,不投递
+                self._pending_ctrl[(nid, c)] = lvl
+                continue
             for (dn, dp, _dslot) in self.compiled.out_edges.get((nid, c, "signal"), []):
                 if dp in self.compiled.types[dn].control_in_map():
                     self.control_in_levels[(dn, dp)] = lvl
@@ -504,7 +537,10 @@ class World:
             lvl = self.output_signals.get((nid, p.name), ACTIVE)
             for (dn, dp, dslot) in self.compiled.out_edges.get((nid, p.name, "data"), []):
                 if dslot == "signal" and dp in self.compiled.types[dn].control_in_map():
-                    self.control_in_levels[(dn, dp)] = lvl
+                    if self._paused:  # 传播闸门:电平挂起
+                        self._pending_signal[(nid, p.name)] = lvl
+                    else:
+                        self.control_in_levels[(dn, dp)] = lvl
 
     # ------------------------------------------------------------------
     # 输入解析
