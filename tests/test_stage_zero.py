@@ -174,12 +174,12 @@ def test_4_graph_edit_migrates_running_state():
                   AddEdge(Wire("clock2", "count", "threshold", "value"))])
     assert res.ok
     assert ("threshold", "value") in res.migration_plan.rewarmed
-    assert "value" not in w._states["threshold"].buffers  # 旧来源缓冲清除
+    assert "value" not in w._impls["threshold"].buffers  # 旧来源缓冲清除
     frozen = w._states["printer"].state["last_msg"]
     w.run()  # clock2 声明在 threshold 之后:本轮 threshold 未见到新值,下游冻结
     assert w._states["printer"].state["last_msg"] == frozen
     w.run()  # 新来源到达 → 重新执行
-    assert "value" in w._states["threshold"].buffers
+    assert "value" in w._impls["threshold"].buffers
 
     # 非法编辑(裸数据输入)校验失败:世界零变更
     class BrokenImpl(NodeImpl):
@@ -522,7 +522,7 @@ def test_extra_globals():
     # 声明序:rep 在 rec 之后 → 同轮读到本轮新值
     assert w.run_outputs[("rep", "out")] == 10
     # 读取不产生缓冲(全局不是输出源,拉不唤醒)
-    assert "seen" not in w._states["rep"].buffers
+    assert "seen" not in w._impls["rep"].buffers
 
 
 # ---------------------------------------------------------------------------
@@ -841,7 +841,26 @@ def test_extra_join_multi_input():
     assert w2._states["printer"].state["last_msg"] is None
     w2.run([Event("i2", "in", "x")])  # b 到达:全部新鲜 → 输出 a|b
     assert w2._states["printer"].state["last_msg"] == "2|x"
+    assert w2._impls["j1"].buffers == {}  # 消费即拿走:缓冲清空(节点基类)
     w2.run([Event("i2", "in", "y")])  # a 已消费:只有 b 新鲜 → 继续等待
     assert w2._states["printer"].state["last_msg"] == "2|x"
     w2.run([Event("i1", "in", 3)])  # a=3 到达:再次触发
     assert w2._states["printer"].state["last_msg"] == "3|y"
+
+
+def test_extra_buffer_consumed_after_fire():
+    """缓冲是数据的临时存储:组触发后输入被消费——缓冲清空(瞬态事件语义)。"""
+    lib, registry = make_env()
+    g = Graph(name="buf", nodes=[NodeInstance("clock", "Clock"),
+                                 NodeInstance("counter", "Counter")],
+              wires=[Wire("clock", "count", "counter", "increment")])
+    w = World(lib, g, registry, seed=0)
+    w.run()
+    assert w._states["counter"].state["count"] == 1
+    # 消费即拿走:increment 缓冲为空,新鲜标记清零(缓冲在节点基类)
+    assert "increment" not in w._impls["counter"].buffers
+    assert w._impls["counter"].fresh == set()
+    # 下一轮新值到达再次触发(状态继续累积)
+    w.run()
+    assert w._states["counter"].state["count"] == 3
+    assert "increment" not in w._impls["counter"].buffers

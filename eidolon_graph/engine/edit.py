@@ -231,6 +231,7 @@ def _apply_migration(world: World, draft: Graph, plan: MigrationPlan, op_count: 
         impl: NodeImpl
         if nid in old_states and nid not in removed:
             st = old_states[nid]
+            old_impl = world._impls[nid]
             if nid in reimpl:
                 rec = reimpl[nid]
                 if rec.action == "kept":
@@ -246,6 +247,8 @@ def _apply_migration(world: World, draft: Graph, plan: MigrationPlan, op_count: 
                 st.inner = world._build_inner(ni, nt, stack)
             impl = (SubgraphNodeImpl(nt) if nt.impl.kind == "subgraph"
                     else world.registry.get(nt.impl.name or nt.name)())
+            impl._buffers = dict(old_impl._buffers)  # 输入缓冲随节点保留(新实例接管)
+            impl._fresh = set(old_impl._fresh)
         else:
             st = NodeState(state=nt.default_state(), initialized=not bool(nt.init_in))
             if nt.impl.kind == "subgraph":
@@ -264,17 +267,17 @@ def _apply_migration(world: World, draft: Graph, plan: MigrationPlan, op_count: 
         if nid not in new_states:
             del world.rngs[nid]
 
-    # 2) 缓冲/电平表迁移:剪除消失的端口;失去来源的端口重置(数据缓冲清空、控制电平回默认)
+    # 2) 缓冲/电平表迁移(缓冲在节点基类):剪除消失的端口;失去来源的端口重置
     rewarm_set = set(plan.rewarmed)
     rewarm_ctrl_set = set(plan.rewarmed_control)
     for nid in new_states:
         nt = world.compiled.types[nid]
         declared_ins = set(nt.data_in_map())
-        st = new_states[nid]
-        st.buffers = {p: v for p, v in st.buffers.items()
-                      if p in declared_ins and (nid, p) not in rewarm_set}
-        st.fresh = {p for p in st.fresh
-                    if p in declared_ins and (nid, p) not in rewarm_set}
+        impl = new_impls[nid]
+        impl._buffers = {p: v for p, v in impl._buffers.items()
+                         if p in declared_ins and (nid, p) not in rewarm_set}
+        impl._fresh = {p for p in impl._fresh
+                       if p in declared_ins and (nid, p) not in rewarm_set}
     world.control_in_levels = {(nid, port): lvl for (nid, port), lvl
                                in world.control_in_levels.items()
                                if nid in new_states and port in

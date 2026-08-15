@@ -72,11 +72,12 @@ class CompiledGraph:
 
 @dataclass
 class NodeState:
-    """节点运行时状态(世界事实):状态字段表 + 输入缓冲 + 熔断器 + 内嵌世界。"""
+    """节点运行时状态(世界事实):状态字段表 + 熔断器 + 内嵌世界。
+
+    输入缓冲在节点基类(NodeImpl)上——节点的独立存储区域。
+    """
 
     state: dict[str, Any]
-    buffers: dict[str, Any] = field(default_factory=dict)   # 端口名 → 最近值(键存在即有值)
-    fresh: set[str] = field(default_factory=set)            # 触发后消费清零的新鲜端口名
     initialized: bool = True                                # __init__ 已执行
     fault_count: int = 0
     circuit_open: bool = False
@@ -251,9 +252,7 @@ class World:
             for (dn, dp, dslot) in self.compiled.out_edges.get((nid, p, "data"), []):
                 if dslot != "data":
                     continue
-                dst = self._states[dn]
-                dst.buffers[dp] = value
-                dst.fresh.add(dp)
+                self._impls[dn].receive(dp, value)
         for (nid, c), lvl in self._pending_ctrl.items():
             for (dn, dp, _dslot) in self.compiled.out_edges.get((nid, c, "signal"), []):
                 if dp in self.compiled.types[dn].control_in_map():
@@ -330,10 +329,8 @@ class World:
             self._next_due[nid] = time.monotonic() + max(float(delay), 0.01)
 
     def _deliver(self, ev: Event) -> None:
-        st = self._states[ev.node]
         if ev.kind == "data":
-            st.buffers[ev.port] = ev.value  # 一格缓冲,新值覆盖
-            st.fresh.add(ev.port)
+            self._impls[ev.node].receive(ev.port, ev.value)  # 一格缓冲,新值覆盖
         else:
             self.control_in_levels[(ev.node, ev.port)] = ev.value
 
@@ -374,7 +371,7 @@ class World:
                     and required_closed:
                 continue  # 必需参数被关闭 → 组不执行(输出信号按传导关闭)
             trigger = [p for p in wired if self._input_signal(nid, p) == ACTIVE]
-            if all(p in st.fresh for p in trigger):
+            if all(p in self._impls[nid].fresh for p in trigger):
                 self._fire(nid, nt, st, group=g.name, ports=tuple(g.inputs))
         # 5) 输出信号自动传导重算
         self._update_output_signals(nid)
@@ -453,9 +450,10 @@ class World:
         merged = dict(state)
         merged.update(out.state)
         st.state = merged
-        # 组输入消费清零(触发后重新等待全套新值)
-        for p in ports:
-            st.fresh.discard(p)
+        # 组输入消费:触发后重新等待全套新值(缓冲清空语义在节点基类——
+        # 连线输入是瞬态事件被拿走,绑定端口是持久输入不消费)
+        self._impls[nid].consume_inputs(
+            ports, {p for p in ports if nt.data_in_map()[p].is_bound()})
         # 数据输出:记录本轮产出 + 沿连线投递 + 全局写入
         # (信号线目标不投递数据值——下游输入信号按需推导 / 电平存储)
         for p, value in out.data_out.items():
@@ -469,9 +467,7 @@ class World:
             for (dn, dp, dslot) in self.compiled.out_edges.get((nid, p, "data"), []):
                 if dslot != "data":
                     continue
-                dst = self._states[dn]
-                dst.buffers[dp] = value
-                dst.fresh.add(dp)
+                self._impls[dn].receive(dp, value)
             if decl.global_write is not None:
                 self.globals_[decl.global_write] = value
         # 控制输出(仅信号节点):显式写电平,未写保持;沿信号线投递到下游控制输入
@@ -553,10 +549,10 @@ class World:
     # ------------------------------------------------------------------
 
     def _resolve_port(self, nid: str, port: str) -> Any:
-        """端口值解析:缓冲 → 常量 → 全局读取 → MISSING。"""
-        st = self._states[nid]
-        if port in st.buffers:
-            return st.buffers[port]
+        """端口值解析:缓冲(节点基类)→ 常量 → 全局读取 → MISSING。"""
+        impl = self._impls[nid]
+        if port in impl.buffers:
+            return impl.buffers[port]
         p = self.compiled.types[nid].data_in_map()[port]
         if p.const_set:
             return deepcopy(p.const)

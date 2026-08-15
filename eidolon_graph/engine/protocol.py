@@ -9,10 +9,10 @@
 实时调度:源节点的发射规则属于节点自身(Clock 按 rate 每秒发一次),引擎不
 硬编码任何节奏——事件源 = 节点,宿主不伪造事件。
 
-基类 final 方法(不可重载,由运行时保证):
-- 触发判定、组缓冲(一格覆盖、触发清零);
-- 信号自动传导(对应输入组全关 → 输出信号关闭);
-- 输出投递、状态提交、异常熔断。
+基类 final 行为(不可重载,由运行时调用):
+- 输入缓冲(节点自身的独立存储区域):一格覆盖、触发后消费清空;
+- 信号自动传导(对应输入组全关 → 输出信号关闭)与触发判定由运行时编排
+  (需跨节点信号),缓冲存储与消费语义在基类。
 
 运行时保证:
 - ctx.state 是当前状态的深拷贝,返回值合并后提交——异常不产生半更新状态;
@@ -72,7 +72,43 @@ class ScheduleContext:
 
 
 class NodeImpl(ABC):
-    """节点实现协议:实现节点协议 = 注册为能力,运行时只认接口不认实现。"""
+    """节点实现协议:实现节点协议 = 注册为能力,运行时只认接口不认实现。
+
+    基类承载输入缓冲——节点的独立存储区域(不可重载,由运行时调用):
+    - receive(port, value):输入到达——一格缓冲,新值覆盖,标记新鲜;
+    - consume_inputs(ports, bound):触发后消费——新鲜标记清零,未绑定端口
+      的缓冲清空(连线输入是瞬态事件,被消费即拿走;绑定端口 const/全局读取
+      是持久输入,不参与触发、不消费);
+    - 每次输入到达后,运行时检测现有数据与信号,条件满足即一次性完成函数
+      调用(被信号关闭的参数旁路,由实现回退默认值),随后缓冲清空。
+    """
+
+    def __init__(self) -> None:
+        # 输入缓冲:端口名 → 最近值(键存在即有值);fresh = 未消费的新输入
+        self._buffers: dict[str, Any] = {}
+        self._fresh: set[str] = set()
+
+    @property
+    def buffers(self) -> dict[str, Any]:
+        """输入缓冲(只读视图,写入走 receive / consume_inputs)。"""
+        return self._buffers
+
+    @property
+    def fresh(self) -> set[str]:
+        """未消费的新鲜输入端口。"""
+        return self._fresh
+
+    def receive(self, port: str, value: Any) -> None:
+        """输入到达:一格缓冲,新值覆盖,标记新鲜。"""
+        self._buffers[port] = value
+        self._fresh.add(port)
+
+    def consume_inputs(self, ports, bound: set[str] | frozenset[str]) -> None:
+        """触发后消费:新鲜标记清零;未绑定端口的缓冲清空(瞬态事件,拿走)。"""
+        for p in ports:
+            self._fresh.discard(p)
+            if p not in bound:
+                self._buffers.pop(p, None)
 
     def init(self, ctx: InitContext) -> dict[str, Any] | None:
         """__init__:实例创建时执行一次(初始化输入就绪后);返回初始状态增量。"""

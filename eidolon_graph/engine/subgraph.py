@@ -17,6 +17,7 @@ class SubgraphNodeImpl(NodeImpl):
     """把一张图封装成节点:外部端口契约由 NodeType 声明,内部结构对上层不可见。"""
 
     def __init__(self, outer_type: NodeType) -> None:
+        super().__init__()
         self.outer = outer_type
 
     def tick(self, ctx: TickContext) -> TickOutput:
@@ -36,9 +37,7 @@ class SubgraphNodeImpl(NodeImpl):
             if p in ctx.closed_in:
                 inner.forced_inactive.add((node, port))
                 continue
-            inner_st = inner._states[node]
-            inner_st.buffers[port] = value
-            inner_st.fresh.add(port)
+            inner._impls[node].receive(port, value)
         for c, lvl in ctx.control_in.items():
             target = pm.get(c)
             if target is not None:

@@ -91,10 +91,11 @@ def capture(world: Any) -> Snapshot:
     for ni in world.graph.nodes:
         nid = ni.node_id
         st = world._states[nid]
+        impl = world._impls[nid]
         ns = NodeSnapshot(
             state=deepcopy(st.state),
-            buffers={port: deepcopy(v) for port, v in st.buffers.items()},
-            fresh=sorted(p for p in st.fresh),
+            buffers={port: deepcopy(v) for port, v in impl.buffers.items()},
+            fresh=sorted(p for p in impl.fresh),
             control_in_levels={port: lvl for (n, port), lvl in world.control_in_levels.items()
                                if n == nid},
             output_signals={port: lvl for (n, port), lvl in world.output_signals.items()
@@ -137,9 +138,10 @@ def restore_world(world: Any, snap: Snapshot) -> None:
     world.control_out_levels.clear()
     for nid, ns in snap.nodes.items():
         st = world._states[nid]
+        impl = world._impls[nid]
         st.state = deepcopy(ns.state)
-        st.buffers = {port: deepcopy(v) for port, v in ns.buffers.items()}
-        st.fresh = set(ns.fresh)
+        impl._buffers = {port: deepcopy(v) for port, v in ns.buffers.items()}
+        impl._fresh = set(ns.fresh)
         st.initialized = ns.initialized
         st.fault_count = ns.fault_count
         st.circuit_open = ns.circuit_open
