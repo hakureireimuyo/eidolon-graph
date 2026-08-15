@@ -1,10 +1,13 @@
-"""Random 随机函数:输入 数字+种子+范围 → 确定性随机数。
+"""Random 随机函数:输入组 = 函数调用,端口 = 参数(全部可选)。
 
-- num(数字输入):触发源(如 Clock.count 连这里),参与哈希;
-- seed / range(范围限制):可用节点设置;不接线回退配置默认值;
-- 配置默认值可编辑(固定值);某个端口被信号禁用时,即使有连线数据也使用配置;
-- 自身不独立输出:无数字输入时不产出;输入组合未变化不重复产出;
-- draw = Rng(derive_seed(seed, str(num))).next_int(range)——同输入恒等可复现。
+random(num, seed, range) → draw:
+- num(数字输入)、seed、range(输出范围 [0, range)) 都是可选参数:
+  接线即参数参与触发,不接线 / 端口被信号禁用 → 回退配置默认值
+  (可点击节点编辑的固定值);
+- 只连 seed 也产生事件:random(num=默认, seed=clock.output, range=默认);
+- 自身不独立输出:全部参数无任何输入时不产出;
+- 同输入组合恒等可复现;全部参数被禁用 → 输出端口自动禁用(自动传导);
+- draw = Rng(derive_seed(seed, str(num))).next_int(range)。
 """
 
 from __future__ import annotations
@@ -16,9 +19,9 @@ from ..rng import Rng, derive_seed
 
 RANDOM = NodeType(
     name="Random",
-    data_in=[DataIn("num", const_set=True, const=None),
-             DataIn("seed", const_set=True, const=None),
-             DataIn("range", const_set=True, const=None)],
+    data_in=[DataIn("num", optional=True),
+             DataIn("seed", optional=True),
+             DataIn("range", optional=True)],
     data_out=[DataOut("draw", type_annot=Annot(int))],
     config=[ConfigField("num", 0, Annot(int)),
             ConfigField("seed", 0, Annot(int)),
@@ -32,18 +35,19 @@ RANDOM = NodeType(
 class RandomImpl(NodeImpl):
     def tick(self, ctx: TickContext) -> TickOutput:
         num = ctx.data_in.get("num")
-        if num is None:
-            if "num" not in ctx.closed_in:
-                return TickOutput()  # 无数字输入:自身不独立输出
-            num = ctx.config.get("num", 0)  # 信号禁用:即使有连线数据也使用配置
         seed = ctx.data_in.get("seed")
-        if seed is None:
-            seed = ctx.config.get("seed", 0)  # 未接线 / 信号禁用 → 配置默认
         rng_range = ctx.data_in.get("range")
+        if num is None and seed is None and rng_range is None:
+            return TickOutput()  # 全部参数无输入:自身不独立输出
+        # 缺失参数(未接线 / 信号禁用)= 使用配置默认值
+        if num is None:
+            num = ctx.config.get("num", 0)
+        if seed is None:
+            seed = ctx.config.get("seed", 0)
         if rng_range is None:
             rng_range = ctx.config.get("range", 100)
         key = [num, seed, rng_range]
         if key == ctx.state.get("last_inputs"):
-            return TickOutput()  # 输入组合未变:不重复产出
+            return TickOutput()  # 同参数组合:恒等,不重复产出
         draw = Rng(derive_seed(int(seed), str(num))).next_int(max(int(rng_range), 1))
         return TickOutput(data_out={"draw": draw}, state={"last_inputs": key})

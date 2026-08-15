@@ -772,22 +772,39 @@ def test_extra_realtime_pause_resume():
 # 补充:Random 随机函数(数字+种子+范围 → 确定性随机数)
 # ---------------------------------------------------------------------------
 
+
 def test_extra_random_function():
-    """Random 是随机函数:自身不独立输出;同输入恒等;信号禁用端口回退配置。"""
+    """Random 是随机函数:输入组 = 函数,端口 = 参数(可选)。
+
+    - 只连 seed 也产生事件:random(num=默认, seed=clock.output, range=默认);
+    - 无任何输入时自身不独立输出;
+    - 同参数组合恒等不重复产出;
+    - 接线覆盖配置默认。
+    """
     from eidolon_graph.engine import Rng, derive_seed
     lib, registry = make_env()
-    g = Graph(name="rnd", nodes=[NodeInstance("r1", "Random", {"seed": 7, "range": 10}),
+    # 只连 seed:时钟输出 → seed,num/range 用配置默认
+    g = Graph(name="rnd", nodes=[NodeInstance("clock", "Clock"),
+                                 NodeInstance("r1", "Random", {"num": 10, "range": 100}),
                                  NodeInstance("printer", "Printer")],
-              wires=[Wire("r1", "draw", "printer", "msg")])
+              wires=[Wire("clock", "count", "r1", "seed"),
+                     Wire("r1", "draw", "printer", "msg")])
     w = World(lib, g, registry, seed=0)
-    w.run()  # 无数字输入:自身不独立输出
-    assert w._states["printer"].state["last_msg"] is None
-    w.run([Event("r1", "num", 1)])  # 注入数字 → 输出 f(seed=7, num=1, range=10)
-    assert w._states["printer"].state["last_msg"] == Rng(derive_seed(7, "1")).next_int(10)
-    w.run([Event("r1", "num", 1)])  # 输入组合未变:不重复产出
-    assert w._states["printer"].state["last_msg"] == Rng(derive_seed(7, "1")).next_int(10)
-    w.run([Event("r1", "num", 2)])  # 新数字 → 新随机数(可复现)
-    assert w._states["printer"].state["last_msg"] == Rng(derive_seed(7, "2")).next_int(10)
-    # 接线覆盖配置默认:seed 端口注入 3 → 使用接线值
-    w.run([Event("r1", "seed", 3), Event("r1", "num", 5)])
-    assert w._states["printer"].state["last_msg"] == Rng(derive_seed(3, "5")).next_int(10)
+    w.run()  # count=1 → seed=1:等价 random(num=10, seed=1, range=100)
+    assert w._states["printer"].state["last_msg"] == Rng(derive_seed(1, "10")).next_int(100)
+    w.run()  # 新 seed=2 → 新值(每次时钟事件都是一次函数调用)
+    assert w._states["printer"].state["last_msg"] == Rng(derive_seed(2, "10")).next_int(100)
+
+    # 无任何输入:自身不独立输出
+    g2 = Graph(name="rnd2", nodes=[NodeInstance("r1", "Random", {"seed": 7, "range": 10}),
+                                   NodeInstance("printer", "Printer")],
+               wires=[Wire("r1", "draw", "printer", "msg")])
+    w2 = World(lib, g2, registry, seed=0)
+    w2.run()
+    assert w2._states["printer"].state["last_msg"] is None
+    w2.run([Event("r1", "num", 1)])  # 注入 num → f(seed=7, num=1, range=10)
+    assert w2._states["printer"].state["last_msg"] == Rng(derive_seed(7, "1")).next_int(10)
+    w2.run([Event("r1", "num", 1)])  # 同参数组合:恒等,不重复产出
+    assert w2._states["printer"].state["last_msg"] == Rng(derive_seed(7, "1")).next_int(10)
+    w2.run([Event("r1", "seed", 3), Event("r1", "num", 5)])  # 接线覆盖配置默认
+    assert w2._states["printer"].state["last_msg"] == Rng(derive_seed(3, "5")).next_int(10)

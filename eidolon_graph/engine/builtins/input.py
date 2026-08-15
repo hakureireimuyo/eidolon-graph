@@ -1,7 +1,7 @@
 """Input 手动输入:宿主经 run(events) 注入新值 → 输出事件向后传播。
 
 事件驱动不在乎事件从哪来——注入数据事件与节点产出数据向后传播完全同构。
-端口是常量 None 兜底的持久输入;实现只在值变化时产出。展示对接由宿主处理
+in 是可选参数端口(函数默认参数):不注入时组不产出。展示对接由宿主处理
 (编辑器对该节点渲染输入栏 + 注入按钮)。
 """
 
@@ -12,7 +12,7 @@ from ..protocol import NodeImpl, TickContext, TickOutput
 
 INPUT = NodeType(
     name="Input",
-    data_in=[DataIn("in", const_set=True, const=None)],
+    data_in=[DataIn("in", optional=True)],
     data_out=[DataOut("out")],
     state=[StateField("last", None)],
     groups=[InputGroup("fire", inputs=["in"], outputs=["out"])],
@@ -23,6 +23,8 @@ INPUT = NodeType(
 class InputImpl(NodeImpl):
     def tick(self, ctx: TickContext) -> TickOutput:
         value = ctx.data_in.get("in")
+        if value is None:
+            return TickOutput()  # 无注入:不产出
         if value == ctx.state.get("last"):
             return TickOutput()  # 无新内容:不产出
         return TickOutput(data_out={"out": value}, state={"last": value})

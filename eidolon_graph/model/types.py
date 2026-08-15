@@ -74,6 +74,12 @@ class DataIn:
     - global_read:全局读取(执行时拉取全局最新值,不参与触发、不唤醒下游);
     - 带绑定的端口不参与触发(可入输入组作为值源,但触发只看未绑定的连线输入);
     - 无绑定且无连线 = 裸端口,编辑事务校验报错(强迫显式)。
+
+    输入组 = 函数:端口 = 参数,端口信号 = 该参数是否使用默认值。
+    optional 参数端口(函数默认参数):可不连线(裸端口校验豁免),不接线时
+    不在 data_in 中出现(实现回退配置默认值);接线即参数,参与触发;
+    端口被信号禁用时同样回退默认值。全部参数被禁用 → 对应输出端口
+    自动禁用(自动传导)。
     """
 
     name: str
@@ -81,6 +87,7 @@ class DataIn:
     const_set: bool = False
     const: Any = None
     global_read: str | None = None
+    optional: bool = False
 
     def is_bound(self) -> bool:
         """带常量/全局读取绑定 → 不参与触发,值随读随用。"""

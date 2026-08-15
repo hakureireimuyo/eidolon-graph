@@ -361,12 +361,18 @@ class World:
             if self._source_due(nid):
                 self._fire(nid, nt, st, group="step", ports=())
                 self._reschedule(nid)
-        # 4) 输入组:组声明序;触发只看未绑定的连线输入(绑定端口仅作值源)
+        # 4) 输入组 = 函数调用:端口 = 参数(连线参数参与触发,绑定端口仅作值源,
+        #    可选参数不接线/被信号禁用 → 回退配置默认,不阻塞触发)
         for g in nt.groups:
+            dmap = nt.data_in_map()
             wired = [p for p in g.inputs
-                     if not nt.data_in_map()[p].is_bound()]
-            if wired and all(self._input_signal(nid, p) == INACTIVE for p in wired):
-                continue  # 全部有效输入被关闭 → 组不执行(输出信号按传导关闭)
+                     if not dmap[p].is_bound()
+                     and (nid, p, "data") in self.compiled.in_edge]
+            required_closed = any(self._input_signal(nid, p) == INACTIVE
+                                  for p in wired if not dmap[p].optional)
+            if wired and all(self._input_signal(nid, p) == INACTIVE for p in wired) \
+                    and required_closed:
+                continue  # 必需参数被关闭 → 组不执行(输出信号按传导关闭)
             trigger = [p for p in wired if self._input_signal(nid, p) == ACTIVE]
             if all(p in st.fresh for p in trigger):
                 self._fire(nid, nt, st, group=g.name, ports=tuple(g.inputs))

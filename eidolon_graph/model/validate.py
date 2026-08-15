@@ -119,16 +119,16 @@ def _validate_node(rep: ValidationReport, lib: AssetLibrary, ni: NodeInstance,
             if ref is not None and not _asset_ref_ok(lib, f.asset_ref, ref):
                 rep.error(f"节点 [{nid}] 配置字段 '{f.name}' 引用了未声明的资产 '{ref}'")
 
-    # 数据输入:绑定互斥 / 引用存在性 / 裸端口
+    # 数据输入:绑定互斥 / 引用存在性 / 裸端口(可选参数端口豁免——函数默认参数)
     for p in nt.data_in:
         if p.const_set and p.global_read is not None:
             rep.error(f"节点 [{nid}] 数据输入 '{p.name}' 同时声明了常量与全局读取绑定(互斥)")
         if p.global_read is not None and p.global_read not in lib.globals_:
             rep.error(f"节点 [{nid}] 数据输入 '{p.name}' 引用了未声明的全局变量 '{p.global_read}'")
         wired = (nid, p.name, "data") in in_edges
-        if not p.is_bound() and not wired:
+        if not p.is_bound() and not wired and not p.optional:
             rep.error(f"节点 [{nid}] 数据输入 '{p.name}' 是裸端口:无连线、无默认、无引用"
-                      f"(强迫显式;可显式声明默认 None)")
+                      f"(强迫显式;可显式声明默认 None 或可选参数)")
 
     # 数据输出:全局写入目标存在 / 同节点多输出同目标
     node_writes: dict[str, str] = {}
