@@ -18,6 +18,7 @@ from ..model import (Annot, AssetLibrary, ConfigField, ControlIn, ControlOut, Da
                      DataOut, ImplBinding, InputGroup, NodeType, StateField)
 from .protocol import NodeImpl, TickContext, TickOutput
 from .registry import NodeRegistry
+from .rng import Rng
 from .signal import ACTIVE, INACTIVE
 
 # ---------------------------------------------------------------------------
@@ -253,23 +254,31 @@ class TimerImpl(NodeImpl):
 
 RANDOM = NodeType(
     name="Random",
-    data_out=[DataOut("draw")],
-    control_in=[ControlIn("enable")],
-    config=[ConfigField("low", 0.0, Annot(float)), ConfigField("high", 1.0, Annot(float)),
-            ConfigField("as_int", False, Annot(bool))],
-    auto=True,
+    data_in=[DataIn("seed", type_annot=Annot(int), const_set=True, const=0)],
+    data_out=[DataOut("draw", type_annot=Annot(int))],
+    config=[ConfigField("range", 100, Annot(int))],  # 输出范围 [0, range),点击节点可控制
+    state=[StateField("last_seed", None)],
+    groups=[InputGroup("draw", inputs=["seed"], outputs=["draw"])],
     impl=ImplBinding(kind="code", name="Random"),
 )
 
 
 class RandomImpl(NodeImpl):
+    """确定性随机数:种子 + 范围 → 一个数字(同种子同范围恒等,可复现)。
+
+    输入变化(种子接线更新 / 点击改范围)才产出新值;绑定默认 seed=0 时
+    首遍产出一次后静默——变化由上游接线驱动(如 Clock.count 作为种子)。
+    """
+
     def tick(self, ctx: TickContext) -> TickOutput:
-        rng = ctx.rng
-        if ctx.config.get("as_int"):
-            v = rng.randint(int(ctx.config.get("low", 0)), int(ctx.config.get("high", 1)))
-        else:
-            v = rng.uniform(ctx.config.get("low", 0.0), ctx.config.get("high", 1.0))
-        return TickOutput(data_out={"draw": v})
+        seed = ctx.data_in.get("seed")
+        if seed is None:
+            seed = 0
+        if int(seed) == ctx.state.get("last_seed"):
+            return TickOutput()  # 输入未变:不产出
+        bound = max(int(ctx.config.get("range", 100)), 1)
+        v = Rng(int(seed)).next_int(bound)
+        return TickOutput(data_out={"draw": v}, state={"last_seed": int(seed)})
 
 
 # ---------------------------------------------------------------------------

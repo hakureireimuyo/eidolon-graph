@@ -168,13 +168,15 @@ def test_4_graph_edit_migrates_running_state():
     assert w._states["clock"].state["count"] == 2  # 世界继续运转(rate 已调制为 False)
 
     # 改连线(换源,一个事务内完成):被断开端口缓冲重置,重新等待新值
-    res = w.edit([RemoveEdge(Wire("counter", "count", "threshold", "value")),
-                  AddEdge(Wire("rng1", "draw", "threshold", "value"))])
+    # (新 Random 是输入驱动的确定性随机数,换源测试改用事务内新增的 Clock2)
+    res = w.edit([AddNode(NodeInstance("clock2", "Clock")),
+                  RemoveEdge(Wire("counter", "count", "threshold", "value")),
+                  AddEdge(Wire("clock2", "count", "threshold", "value"))])
     assert res.ok
     assert ("threshold", "value") in res.migration_plan.rewarmed
     assert "value" not in w._states["threshold"].buffers  # 旧来源缓冲清除
     frozen = w._states["printer"].state["last_msg"]
-    w.run()  # rng1 声明在 threshold 之后:本轮 threshold 未见到新值,下游冻结
+    w.run()  # clock2 声明在 threshold 之后:本轮 threshold 未见到新值,下游冻结
     assert w._states["printer"].state["last_msg"] == frozen
     w.run()  # 新来源到达 → 重新执行
     assert "value" in w._states["threshold"].buffers
@@ -764,3 +766,26 @@ def test_extra_realtime_pause_resume():
     w.resume()  # 冲刷挂起投递:counter 拿到最新 count,级联完成
     assert w._states["counter"].state["count"] == 1 + clock_count
     w.stop()
+
+
+def test_extra_random_seed_range():
+    """Random = 确定性随机数:种子 + 范围 → 一个数字;输入变化才产出,同种子同范围恒等。"""
+    from eidolon_graph.engine import Rng
+    lib, registry = make_env()
+    g = Graph(name="rnd", nodes=[NodeInstance("r1", "Random", {"range": 10}),
+                                 NodeInstance("printer", "Printer")],
+              wires=[Wire("r1", "draw", "printer", "msg")])
+    w = World(lib, g, registry, seed=0)
+    w.run()
+    draw1 = w._states["printer"].state["last_msg"]
+    assert draw1 == Rng(0).next_int(10)  # 默认种子 0,确定性可复现
+    w.run()  # 种子未变:不产出
+    assert w._states["printer"].state["last_msg"] == draw1
+    # 注入新种子 → 新值(同种子恒等)
+    w.run([Event("r1", "seed", 7)])
+    assert w._states["printer"].state["last_msg"] == Rng(7).next_int(10)
+    # 种子往返:0 → 7 各次输出与首次相同(纯函数)
+    w.run([Event("r1", "seed", 0)])
+    assert w._states["printer"].state["last_msg"] == draw1
+    w.run([Event("r1", "seed", 7)])
+    assert w._states["printer"].state["last_msg"] == Rng(7).next_int(10)
