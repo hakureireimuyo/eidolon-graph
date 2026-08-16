@@ -876,6 +876,25 @@ def test_input_same_value_reinject_fires():
     assert w._states["counter"].state["count"] == 10
 
 
+def test_pulse_clock_sequence():
+    """Pulse 脉冲时钟(时钟序列):与 Clock 同构的周期信号源——每次发射电平翻转,
+    输出高/低交替的方波;信号门控数据流(高拍计数、低拍停住)。"""
+    lib, registry = make_env()
+    g = Graph(name="pulse", nodes=[NodeInstance("p1", "Pulse"),
+                                   NodeInstance("c1", "Clock")],
+              wires=[Wire("p1", "sig", "c1", "enable", dst_slot="signal")])
+    w = World(lib, g, registry, seed=0)
+    w.run()  # p1 翻转为高:clock 使能,count=1
+    assert w.control_out_levels[("p1", "sig")] == "active"
+    assert w._states["c1"].state["count"] == 1
+    w.run()  # p1 翻转为低:clock 门控,count 不变
+    assert w.control_out_levels[("p1", "sig")] == "inactive"
+    assert w._states["c1"].state["count"] == 1
+    w.run()  # 再次翻转:高,clock 继续计数
+    assert w.control_out_levels[("p1", "sig")] == "active"
+    assert w._states["c1"].state["count"] == 2
+
+
 def test_extra_buffer_consumed_after_fire():
     """缓冲是数据的临时存储:组触发后输入被消费——缓冲清空(瞬态事件语义)。"""
     lib, registry = make_env()
