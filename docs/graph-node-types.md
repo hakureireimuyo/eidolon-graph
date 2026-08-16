@@ -76,7 +76,7 @@
 
 ## 7. 协议稳定,实现可迭代
 
-接口的层级足够低——需要长期稳定的只有 Node / Port / Signal / State / Graph / Tick / Asset / Snapshot 这少数几个概念。**人格算法、记忆算法、RAG、情绪模型、剧情系统、世界模拟、LLM、Agent、场景生成,全部可以在这个稳定底座之上持续演化。**
+接口的层级足够低——需要长期稳定的只有 Node / Port / Signal / State / Graph / Event / Asset / Snapshot 这少数几个概念。**人格算法、记忆算法、RAG、情绪模型、剧情系统、世界模拟、LLM、Agent、场景生成,全部可以在这个稳定底座之上持续演化。**
 
 以人格节点为例,同一协议下的实现可以自由迭代:
 
