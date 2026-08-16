@@ -15,6 +15,9 @@ wheels = [
 name = "eidolon-graph"
 version = "0.1.0"
 source = { editable = "." }
+dependencies = [
+    { name = "eidolon-llm" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -22,9 +25,15 @@ dev = [
 ]
 
 [package.metadata]
+requires-dist = [{ name = "eidolon-llm", git = "ssh://git@github.com/hakureireimuyo/eidolon-llm.git?rev=fd47b6f633cf03f6ecf4f81cc3393f0fa22b33ef" }]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest" }]
+
+[[package]]
+name = "eidolon-llm"
+version = "0.1.0"
+source = { git = "ssh://git@github.com/hakureireimuyo/eidolon-llm.git?rev=fd47b6f633cf03f6ecf4f81cc3393f0fa22b33ef#fd47b6f633cf03f6ecf4f81cc3393f0fa22b33ef" }
 
 [[package]]
 name = "iniconfig"

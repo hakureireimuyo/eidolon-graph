@@ -7,7 +7,12 @@ name = "eidolon-graph"
 version = "0.1.0"
 description = "Eidolon 图运行时内核 —— 图模型 + 执行引擎 + 内置节点;编辑器与运行时共同依赖的稳定核心"
 requires-python = ">=3.11"
-dependencies = []
+# 内核核心零第三方依赖(模型与执行语义为纯 Python);
+# eidolon-llm 是节点封装层(eidolon_graph/nodes/llm)引用的能力库——
+# 能力在库、包装在内核;库本身零外部依赖、零图概念。
+dependencies = [
+    "eidolon-llm",
+]
 
 [dependency-groups]
 dev = ["pytest"]
@@ -15,5 +20,5 @@ dev = ["pytest"]
 [tool.setuptools.packages.find]
 include = ["eidolon_graph*"]
 
-# 内核零第三方依赖:模型与执行语义为纯 Python;节点由宿主注册(编辑器 stub / eidolon-runtime 真实现)。
-# 消费方(eidolon-runtime / 图编辑服务)以 git 源 + pin rev 依赖本库,见各消费方 pyproject 的 [tool.uv.sources]。
+[tool.uv.sources]
+eidolon-llm = { git = "ssh://git@github.com/hakureireimuyo/eidolon-llm.git", rev = "fd47b6f633cf03f6ecf4f81cc3393f0fa22b33ef" }
