@@ -1,7 +1,7 @@
 # LLM 节点封装层:能力库 eidolon-llm 的节点包装
 
 > 内核仓库内的**节点封装层**(`eidolon_graph/nodes/llm`):内核引用独立
-> 能力子项目 [eidolon-llm](../../runtime/eidolon-llm),把模型调用能力
+> 能力子项目 [eidolon-llm](../../capabilities/eidolon-llm),把模型调用能力
 > 包装成节点。分层原则:**能力库零图概念、零协议依赖;封装层不实现任何
 > 模型调用逻辑。**
 
