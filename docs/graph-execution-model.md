@@ -1,7 +1,7 @@
 # 执行模型:事件驱动的图状态转换系统
 
 > 本文档记录引擎执行语义的**最终决策**:世界是一个被信号与事件驱动、按数据流因果序传播的程序(状态机)——节点因事件执行,端口信号决定网络的通断。没有全局轮次,没有时间序列。
-> 相关文档:[图运行时总纲](./graph-runtime-overview.md) · [端口、绑定与控制信号](./graph-ports-bindings.md) · [持久化与编辑](./graph-persistence-and-editing.md)
+> 相关文档:[图运行时总纲](./graph-runtime-overview.md) · [端口、绑定与控制信号](./graph-ports-bindings.md) · [持久化与编辑](./graph-persistence-and-editing.md) · [节点协议(内核↔节点 ABI)](./node-protocol.md)
 
 ## 1. 核心命题
 

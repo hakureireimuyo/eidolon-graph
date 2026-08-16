@@ -1,7 +1,7 @@
 # 节点类型:类式接口契约
 
 > 本文档定义节点类型资产:**像类一样只定义接口,节点内部自维护数据和状态,对外暴露输入输出接口;内部是什么都没关系。**
-> 相关文档:[图运行时总纲](./graph-runtime-overview.md) · [端口、绑定与控制信号](./graph-ports-bindings.md) · [资产系统](./graph-assets.md) · 人格、意图与认知链(eidolon-runtime 仓库 docs/graph-cognitive-chain.md)
+> 相关文档:[图运行时总纲](./graph-runtime-overview.md) · [端口、绑定与控制信号](./graph-ports-bindings.md) · [资产系统](./graph-assets.md) · [节点协议(内核↔节点 ABI)](./node-protocol.md) · 人格、意图与认知链(eidolon-runtime 仓库 docs/graph-cognitive-chain.md)
 
 ## 1. 核心命题
 
