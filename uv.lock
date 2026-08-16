@@ -25,7 +25,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "eidolon-llm", git = "ssh://git@github.com/hakureireimuyo/eidolon-llm.git?rev=fd47b6f633cf03f6ecf4f81cc3393f0fa22b33ef" }]
+requires-dist = [{ name = "eidolon-llm", git = "ssh://git@github.com/hakureireimuyo/eidolon-llm.git?rev=8121ece704f1311b33e02826308060a9501de2a5" }]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest" }]
@@ -33,7 +33,7 @@ dev = [{ name = "pytest" }]
 [[package]]
 name = "eidolon-llm"
 version = "0.1.0"
-source = { git = "ssh://git@github.com/hakureireimuyo/eidolon-llm.git?rev=fd47b6f633cf03f6ecf4f81cc3393f0fa22b33ef#fd47b6f633cf03f6ecf4f81cc3393f0fa22b33ef" }
+source = { git = "ssh://git@github.com/hakureireimuyo/eidolon-llm.git?rev=8121ece704f1311b33e02826308060a9501de2a5#8121ece704f1311b33e02826308060a9501de2a5" }
 
 [[package]]
 name = "iniconfig"
