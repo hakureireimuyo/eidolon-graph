@@ -18,6 +18,21 @@ COUNTER = NodeType(
 
 
 class CounterImpl(NodeImpl):
+    def doc(self) -> dict:
+        return {
+            "summary": "累加器:收到 increment 值就累加,count 输出累计和。",
+            "sections": [
+                {"title": "行为", "lines": [
+                    "每次收到 increment 新值:count = count + increment",
+                    "enable 输入低电平 = 计数暂停;increment 输入信号被关闭同样暂停",
+                ]},
+                {"title": "典型接法", "lines": [
+                    "increment ← 数据输出(如 Clock.count):逐拍累加",
+                    "count → 需要累计值的下游(如 Threshold.value)",
+                ]},
+            ],
+        }
+
     def tick(self, ctx: TickContext) -> TickOutput:
         inc = ctx.data_in.get("increment")
         count = ctx.state.get("count", 0)

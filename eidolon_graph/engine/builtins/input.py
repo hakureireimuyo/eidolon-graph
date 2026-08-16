@@ -23,6 +23,21 @@ INPUT = NodeType(
 
 
 class InputImpl(NodeImpl):
+    def doc(self) -> dict:
+        return {
+            "summary": "手动输入:点「输入」注入事件,内容从 out 输出。",
+            "sections": [
+                {"title": "行为", "lines": [
+                    "在右侧节点编辑器输入内容,点「输入」或回车注入",
+                    "每次点击都是新事件:同值重复注入同样触发(不做事先去重)",
+                    "out 输出注入的内容;从未注入过则不产出",
+                ]},
+                {"title": "典型接法", "lines": [
+                    "out → 任意数据输入:手动触发下游事件流(与节点产出数据同构)",
+                ]},
+            ],
+        }
+
     def tick(self, ctx: TickContext) -> TickOutput:
         value = ctx.data_in.get("in")
         if value is None:

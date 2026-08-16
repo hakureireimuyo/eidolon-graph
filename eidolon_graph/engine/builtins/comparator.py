@@ -17,6 +17,18 @@ COMPARATOR = NodeType(
 
 
 class ComparatorImpl(NodeImpl):
+    def doc(self) -> dict:
+        return {
+            "summary": "双输入比较:输出 gt/eq 布尔数据 + a_gt_b 信号。",
+            "sections": [
+                {"title": "行为", "lines": [
+                    "a、b 都收到新值后触发一次比较",
+                    "gt 数据输出:a > b;eq 数据输出:a == b(布尔值)",
+                    "a_gt_b 信号输出:高 = a 大于 b",
+                ]},
+            ],
+        }
+
     def tick(self, ctx: TickContext) -> TickOutput:
         a = ctx.data_in.get("a")
         b = ctx.data_in.get("b")

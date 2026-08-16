@@ -33,6 +33,21 @@ RANDOM = NodeType(
 
 
 class RandomImpl(NodeImpl):
+    def doc(self) -> dict:
+        return {
+            "summary": "随机函数:按参数抽取 [0, range) 的确定性随机整数。",
+            "sections": [
+                {"title": "行为", "lines": [
+                    "输入组 = 函数调用:random(num, seed, range) → draw",
+                    "全部参数可选:不接线 / 被信号禁用 → 回退配置默认值",
+                    "同输入组合恒等可复现(seed 派生每节点独立随机流,可离线重放)",
+                ]},
+                {"title": "典型接法", "lines": [
+                    "seed ← Clock.count(时序种子),num ← 数据源:确定性随机序列",
+                ]},
+            ],
+        }
+
     def tick(self, ctx: TickContext) -> TickOutput:
         num = ctx.data_in.get("num")
         seed = ctx.data_in.get("seed")

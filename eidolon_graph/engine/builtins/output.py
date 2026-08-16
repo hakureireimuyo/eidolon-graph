@@ -19,6 +19,17 @@ OUTPUT = NodeType(
 
 
 class OutputImpl(NodeImpl):
+    def doc(self) -> dict:
+        return {
+            "summary": "日志输出:把收到的消息逐行累积,显示在编辑器控制台。",
+            "sections": [
+                {"title": "行为", "lines": [
+                    "msg 新值到达:追加一行到控制台输出(编辑器读该节点状态 lines 展示)",
+                    "历史行全部保留:控制台 tab 与「节点」tab 中可见",
+                ]},
+            ],
+        }
+
     def tick(self, ctx: TickContext) -> TickOutput:
         line = str(ctx.data_in.get("msg"))
         lines = list(ctx.state.get("lines", []))

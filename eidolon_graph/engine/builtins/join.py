@@ -20,6 +20,20 @@ JOIN = NodeType(
 
 
 class JoinImpl(NodeImpl):
+    def doc(self) -> dict:
+        return {
+            "summary": "拼接节点:双输入齐全后拼成 \"a|b\" 字符串输出。",
+            "sections": [
+                {"title": "行为", "lines": [
+                    "a、b 两个输入都收到新值才触发一次输出(不同时期到达则等待)",
+                    "输出 = \"a|b\"(| 分隔的字符串);触发后缓冲清空,重新等待全套新值",
+                ]},
+                {"title": "典型接法", "lines": [
+                    "两个不同来源 → 一个输出:组合事件流(如 数据 + 时间戳)",
+                ]},
+            ],
+        }
+
     def tick(self, ctx: TickContext) -> TickOutput:
         a = ctx.data_in.get("a")
         b = ctx.data_in.get("b")

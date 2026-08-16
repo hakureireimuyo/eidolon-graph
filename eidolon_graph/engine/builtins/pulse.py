@@ -26,6 +26,20 @@ PULSE = NodeType(
 
 
 class PulseImpl(NodeImpl):
+    def doc(self) -> dict:
+        return {
+            "summary": "脉冲时钟:每秒发射一次,输出高/低交替翻转的方波信号。",
+            "sections": [
+                {"title": "行为", "lines": [
+                    "每次发射 sig 电平翻转一次:高、低、高、低…(时钟序列)",
+                    "enable 输入低电平 = 暂停发射(电平保持);rate 输入可调制速度",
+                ]},
+                {"title": "典型接法", "lines": [
+                    "sig → 任意控制输入/信号槽:周期性门控(如让 Clock 隔拍计数)",
+                ]},
+            ],
+        }
+
     def tick(self, ctx: TickContext) -> TickOutput:
         if ctx.group == "step":
             level = ctx.state.get("level", False)

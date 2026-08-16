@@ -19,6 +19,21 @@ THRESHOLD = NodeType(
 
 
 class ThresholdImpl(NodeImpl):
+    def doc(self) -> dict:
+        return {
+            "summary": "阈值判断:value ≥ limit 时 over 输出真,under 信号翻低。",
+            "sections": [
+                {"title": "行为", "lines": [
+                    "value 新值到达时与 limit(节点配置)比较",
+                    "over 数据输出布尔值:value ≥ limit 为真",
+                    "under 信号输出:低于阈值 = 高(默认高,超限翻低)",
+                ]},
+                {"title": "典型接法", "lines": [
+                    "under → 上游源的 enable:超限自动停机(结构级反馈,编辑器静态警告无源环)",
+                ]},
+            ],
+        }
+
     def tick(self, ctx: TickContext) -> TickOutput:
         v = ctx.data_in.get("value")
         limit = ctx.config.get("limit")

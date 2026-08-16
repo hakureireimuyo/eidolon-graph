@@ -895,6 +895,27 @@ def test_pulse_clock_sequence():
     assert w._states["c1"].state["count"] == 2
 
 
+def test_builtin_node_docs():
+    """节点说明书:基类默认空文档;全部内置节点返回结构化文档,带散文内容。
+
+    doc() 结构 = {"summary": str, "sections": [{"title": str, "lines": [str]}]},
+    声明结构(端口/状态/配置)由类型资产序列化下发,文档不重复。
+    """
+    lib, registry = make_env()
+    for nt in lib.node_types.values():
+        d = registry.get(nt.impl.name or nt.name)().doc()
+        assert isinstance(d, dict) and "summary" in d and "sections" in d
+        assert isinstance(d["summary"], str)
+        for s in d["sections"]:
+            assert isinstance(s, dict) and "title" in s and "lines" in s
+            assert all(isinstance(l, str) for l in s["lines"])
+    # 内置节点全部带说明书(编辑器的调色板悬停/节点详情展示)
+    for name in ("Clock", "Pulse", "Input", "Output", "Threshold", "Join"):
+        d = registry.get(name)().doc()
+        assert d["summary"], f"{name} 缺少概要"
+        assert d["sections"], f"{name} 缺少说明分节"
+
+
 def test_extra_buffer_consumed_after_fire():
     """缓冲是数据的临时存储:组触发后输入被消费——缓冲清空(瞬态事件语义)。"""
     lib, registry = make_env()

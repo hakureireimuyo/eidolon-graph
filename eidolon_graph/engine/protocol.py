@@ -88,6 +88,16 @@ class NodeImpl(ABC):
         self._buffers: dict[str, Any] = {}
         self._fresh: set[str] = set()
 
+    def doc(self) -> dict:
+        """节点说明书:结构化纯文本(与编辑器展示对接的接口之一)。
+
+        返回 {"summary": str, "sections": [{"title": str, "lines": [str, ...]}]};
+        默认无说明(编辑器隐藏说明书区);复杂节点重载补充散文:
+        - lines 内空行分段、以 "- " 开头的行渲染为列表项;
+        - 声明结构(端口/状态/配置/组)由类型资产序列化下发,此处不重复。
+        """
+        return {"summary": "", "sections": []}
+
     @property
     def buffers(self) -> dict[str, Any]:
         """输入缓冲(只读视图,写入走 receive / consume_inputs)。"""

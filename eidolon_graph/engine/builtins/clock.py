@@ -22,6 +22,21 @@ CLOCK = NodeType(
 
 
 class ClockImpl(NodeImpl):
+    def doc(self) -> dict:
+        return {
+            "summary": "时钟源:每秒发射一次计数事件,驱动下游数据流。",
+            "sections": [
+                {"title": "行为", "lines": [
+                    "每次发射 count = count + rate(默认 rate=1:1、2、3…递增)",
+                    "enable 输入低电平 = 暂停发射;rate 输入可调制速度(每秒 rate 次)",
+                ]},
+                {"title": "典型接法", "lines": [
+                    "count → 任意数据输入:每秒推送一个新值",
+                    "enable ← 信号节点输出:条件启停(如 Threshold.under 超限停机)",
+                ]},
+            ],
+        }
+
     def tick(self, ctx: TickContext) -> TickOutput:
         if ctx.group == "step":
             count = ctx.state.get("count", 0)

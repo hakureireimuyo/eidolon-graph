@@ -15,6 +15,20 @@ NOT_NODE = NodeType(
 
 
 class NotImpl(NodeImpl):
+    def doc(self) -> dict:
+        return {
+            "summary": "信号非门:输入电平取反输出。",
+            "sections": [
+                {"title": "行为", "lines": [
+                    "in 高 → out 低;in 低 → out 高",
+                    "电平函数:输入电平变化立即反映到输出",
+                ]},
+                {"title": "典型接法", "lines": [
+                    "条件取反:如「低于阈值」= NOT(Threshold.over)",
+                ]},
+            ],
+        }
+
     def tick(self, ctx: TickContext) -> TickOutput:
         level = ctx.control_in.get("in")
         return TickOutput(control_out={"out": INACTIVE if level == ACTIVE else ACTIVE})
