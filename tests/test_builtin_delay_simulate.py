@@ -10,7 +10,6 @@
   快照/恢复不涉及连接对象。
 """
 
-import threading
 import time
 
 import pytest
@@ -107,21 +106,31 @@ def test_delay_realtime_ticks_per_second():
 # Simulate
 # ---------------------------------------------------------------------------
 
-def make_simulate_graph(config):
-    return Graph(name="sim", nodes=[
+def make_simulate_graph(config, with_sibling=False):
+    """with_sibling: 额外接 outB 直接吃 trigger(验证扇出不阻塞)。"""
+    nodes = [
         NodeInstance("in_trigger", "Input"),
         NodeInstance("sim", "Simulate", config=config),
         NodeInstance("out", "Output"),
-    ], wires=[
+    ]
+    wires = [
         Wire("in_trigger", "out", "sim", "trigger"),
         Wire("sim", "result", "out", "msg"),
-    ])
+    ]
+    if with_sibling:
+        nodes.append(NodeInstance("outB", "Output"))
+        wires.append(Wire("in_trigger", "out", "outB", "msg"))
+    return Graph(name="sim", nodes=nodes, wires=wires)
 
 
 def test_simulate_ok_produces_output_after_work():
     lib, registry = make_env()
     w = World(lib, make_simulate_graph({"mode": "ok", "work_ms": 0}), registry)
-    w.run([Event("in_trigger", "in", "hello")])
+    w.run([Event("in_trigger", "in", "hello")])   # 触发:写 pending,立即返回
+    assert w._states["out"].state["lines"] == []  # 未到期:不产出
+    w.run()                                       # 到期(work_ms=0):step 产出
+    assert w._states["out"].state["lines"] == ["hello"]
+    w.run()                                       # 任务已结束:不再产出
     assert w._states["out"].state["lines"] == ["hello"]
 
 
@@ -129,30 +138,50 @@ def test_simulate_error_raises_and_trips_fuse():
     lib, registry = make_env()
     w = World(lib, make_simulate_graph(
         {"mode": "error", "work_ms": 0, "error_msg": "boom"}), registry)
-    w.run([Event("in_trigger", "in", "x")])
-    assert w._states["sim"].fault_count == 1
-    assert w._states["out"].state["lines"] == []          # 异常:不产出
+    w.run([Event("in_trigger", "in", "x")])       # 触发轮:pending 写入,不崩
+    assert w._states["out"].state["lines"] == []
+    for _ in range(5):                            # 到期后自走 step 每轮崩一次
+        w.run()
+    assert w._states["sim"].fault_count == 5      # 连续 5 轮异常 → 熔断
+    assert w._states["sim"].circuit_open
+    assert w._states["out"].state["lines"] == []  # 异常:从不产出
     assert any(e["level"] == "error" and "RuntimeError" in e["message"]
                for e in w.log)
-    for _ in range(4):                                    # 连续异常 → 熔断
-        w.run([Event("in_trigger", "in", "x")])
-    assert w._states["sim"].circuit_open
     assert any(e["level"] == "warning" and "熔断" in e["message"] for e in w.log)
 
 
-def test_simulate_hang_blocks_forever_without_output():
-    """真实卡死:run 永不返回、无任何输出(daemon 线程随进程退出,不 join)。"""
+def test_simulate_hang_never_completes_but_world_runs():
+    """异步卡死:任务永不完成、无输出,但世界照常运行(不阻塞任何节点)。"""
     lib, registry = make_env()
-    w = World(lib, make_simulate_graph({"mode": "hang", "work_ms": 0}), registry)
-    returned = {}
-    t = threading.Thread(target=lambda: (
-        w.run([Event("in_trigger", "in", "x")]), returned.setdefault("done", True)),
-        daemon=True)
-    t.start()
-    time.sleep(0.4)
-    assert t.is_alive()                       # run 未返回:世界线程被卡死
-    assert not returned
-    assert w._states["out"].state["lines"] == []  # 无任何输出
+    w = World(lib, make_simulate_graph({"mode": "hang"}, with_sibling=True), registry)
+    w.run([Event("in_trigger", "in", "x")])       # 触发轮:任务发起(hang:永不完成)
+    assert w._states["out"].state["lines"] == []  # outA 永远等不到
+    for _ in range(3):                            # 世界照常运行
+        w.run()
+    assert w._states["out"].state["lines"] == []          # simulate 无输出
+    assert w._states["outB"].state["lines"] == ["x"]      # 兄弟分支不受影响
+
+
+def test_simulate_does_not_block_sibling_branch():
+    """用户场景:input 扇出 simulate 与 outputB,simulate 的模拟耗时不应阻塞 outputB。
+
+    trigger 同轮到达两个分支:simulate 写 pending 立即返回,outB 当轮即输出;
+    simulate 到期后 outA 才输出。
+    """
+    lib, registry = make_env()
+    w = World(lib, make_simulate_graph({"mode": "ok", "work_ms": 300},
+                                       with_sibling=True), registry)
+    w.run([Event("in_trigger", "in", "x")])
+    # 同轮:兄弟分支已输出,simulate 分支等待中
+    assert w._states["outB"].state["lines"] == ["x"]
+    assert w._states["out"].state["lines"] == []
+    # 宿主循环驱动:轮询 run() 直到 simulate 到期产出(work_ms=300ms)
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and not w._states["out"].state["lines"]:
+        w.run()
+        time.sleep(0.05)
+    assert w._states["out"].state["lines"] == ["x"]   # outA 最终收到(未丢失)
+    assert w._states["outB"].state["lines"] == ["x"]
 
 
 # ---------------------------------------------------------------------------
