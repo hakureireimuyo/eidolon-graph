@@ -140,3 +140,23 @@ Scheduler 不需要知道"这是剧情节点、人格节点、Agent、记忆、L
 3. **确定性优先**:数据流因果序 + 每节点独立随机流,同一图同一输入结果唯一。
 4. **节点协议是唯一边界**:实现节点协议 = 注册为能力,运行时只认接口不认实现。
 5. **职责五分离**:连线负责传播,节点负责转换,节点状态负责事实,资产负责规则,宿主注入的事件负责节奏(内核不含时间)——系统只需要稳定这五个概念,其余全部是节点组合。
+
+## 8. 内核演化阶段:从图执行内核到世界内核
+
+当前内核是**执行内核(Execution Kernel)**——回答"图能不能可靠地运行"。下一阶段向
+**世界内核(World Kernel)**演化——回答"游戏世界如何作为长期存在的运行对象被内核管理":
+
+| 阶段 | 核心模型 | 回答的问题 |
+|------|---------|-----------|
+| Execution Kernel(当前,已完成) | Graph / Node / 连线 / 脏节点传播 / Event / 状态 / 资产 / 快照 / 调度 | 图能不能可靠地运行 |
+| World Kernel(下一阶段) | Entity / World / 时间 / 长期状态 / 持久化 / 事件模型 | 游戏世界如何作为长期存在的运行对象被内核管理 |
+| 第三阶段 | World → Game Project → Runtime → 玩家交互 | 一个完整游戏如何被设计、运行与交互(三层定位见顶层 `docs/kernel-editor-runtime.md`) |
+
+- **Node ≠ GameObject**:节点是"计算与状态变化的行为单元",游戏世界中的实体由多个节点组合而成——
+  角色 = Identity / Physical / Relationship / Memory 等状态 + Decision / Dialogue / Perception /
+  Behavior 等行为节点;
+- **快照已是 World State 持久化的雏形**:图资产版本引用 + 节点状态 + 输入缓冲 + 信号电平 + 全局变量 +
+  RNG 状态,已经在回答"游戏世界在某一个时间点究竟是什么状态"(见 [持久化与编辑](./graph-persistence-and-editing.md) §3);
+- **Runtime 是内核的宿主层,不是内核的替代品**:Runtime 所缺的能力(多 Agent 世界管理、输入输出边界等)
+  应等内核世界模型成熟后再向上提供——先让 Graph Runtime 演化成真正的 Game Kernel,再让 Editor 用它设计
+  游戏、让 Runtime 用它运行游戏(见顶层 `docs/kernel-editor-runtime.md`)。
