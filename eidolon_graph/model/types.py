@@ -80,6 +80,12 @@ class DataIn:
     不在 data_in 中出现(实现回退配置默认值);接线即参数,参与触发;
     端口被信号禁用时同样回退默认值。全部参数被禁用 → 对应输出端口
     自动禁用(自动传导)。
+
+    trigger(事件端口):主要语义是**触发而非数据**——到达即触发组,载荷可用
+    可忽略(如 Buffer.flush 纯触发、Delay.trigger 触发并回显载荷);与绑定
+    互斥(事件不是持久值,校验器禁止),可与 optional 组合(如 LlmCall._result
+    完成注入端口)。触发判定本就基于"新值到达"(fresh),引擎对 trigger 端口
+    零特殊处理——标记是语义声明,供编辑器/文档/校验消费。
     """
 
     name: str
@@ -88,6 +94,7 @@ class DataIn:
     const: Any = None
     global_read: str | None = None
     optional: bool = False
+    trigger: bool = False  # 事件端口:主要语义是触发而非数据
 
     def is_bound(self) -> bool:
         """带常量/全局读取绑定 → 不参与触发,值随读随用。"""

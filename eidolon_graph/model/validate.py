@@ -121,6 +121,9 @@ def _validate_node(rep: ValidationReport, lib: AssetLibrary, ni: NodeInstance,
 
     # 数据输入:绑定互斥 / 引用存在性 / 裸端口(可选参数端口豁免——函数默认参数)
     for p in nt.data_in:
+        if p.trigger and (p.const_set or p.global_read is not None):
+            rep.error(f"节点 [{nid}] 触发端口 '{p.name}' 不能带绑定"
+                      f"(事件端口不是持久值:触发 = 新值到达,fresh 来自投递)")
         if p.const_set and p.global_read is not None:
             rep.error(f"节点 [{nid}] 数据输入 '{p.name}' 同时声明了常量与全局读取绑定(互斥)")
         if p.global_read is not None and p.global_read not in lib.globals_:

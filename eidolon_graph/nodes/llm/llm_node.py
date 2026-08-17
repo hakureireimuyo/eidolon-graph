@@ -18,7 +18,8 @@ from ...model import (Annot, ConfigField, ControlOut, DataIn, DataOut,
 
 LLM_CALL = NodeType(
     name="LlmCall",
-    data_in=[DataIn("prompt"), DataIn("_result", optional=True)],  # 完成端口 = 可选参数
+    # 完成端口 = 可选参数 + 事件端口:注入即触发,空触发保持等待(协议 §4)
+    data_in=[DataIn("prompt"), DataIn("_result", optional=True, trigger=True)],
     data_out=[DataOut("response")],
     control_out=[ControlOut("failed", default_level=INACTIVE)],
     config=[ConfigField("model", ""),

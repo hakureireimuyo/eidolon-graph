@@ -16,7 +16,8 @@ from ..protocol import NodeImpl, TickContext, TickOutput
 
 DELAY = NodeType(
     name="Delay",
-    data_in=[DataIn("delay", type_annot=Annot(int)), DataIn("trigger")],
+    data_in=[DataIn("delay", type_annot=Annot(int)),
+             DataIn("trigger", trigger=True)],  # 事件端口:触发装填,载荷回显
     data_out=[DataOut("out")],
     state=[StateField("remaining", 0, Annot(int)), StateField("pending", None)],
     groups=[InputGroup("arm", inputs=["delay", "trigger"], outputs=[])],

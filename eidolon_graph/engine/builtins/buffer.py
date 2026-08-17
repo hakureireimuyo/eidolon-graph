@@ -15,7 +15,8 @@ from ..protocol import NodeImpl, TickContext, TickOutput
 
 BUFFER = NodeType(
     name="Buffer",
-    data_in=[DataIn("put"), DataIn("flush")],
+    data_in=[DataIn("put"),
+             DataIn("flush", trigger=True)],  # 事件端口:触发输出并清空,载荷忽略
     data_out=[DataOut("items")],
     state=[StateField("items", [])],
     groups=[InputGroup("put", inputs=["put"], outputs=[]),

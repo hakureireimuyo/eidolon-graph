@@ -49,13 +49,15 @@ def annot_from_dict(v: Any) -> Annot:
 def data_in_to_dict(p: DataIn) -> dict:
     return {"name": p.name, "type": annot_to_dict(p.type_annot),
             "const_set": p.const_set, "const": p.const,
-            "global_read": p.global_read, "optional": p.optional}
+            "global_read": p.global_read, "optional": p.optional,
+            "trigger": p.trigger}
 
 
 def data_in_from_dict(d: dict) -> DataIn:
     return DataIn(name=d["name"], type_annot=annot_from_dict(d.get("type")),
                   const_set=d.get("const_set", False), const=d.get("const"),
-                  global_read=d.get("global_read"), optional=d.get("optional", False))
+                  global_read=d.get("global_read"), optional=d.get("optional", False),
+                  trigger=d.get("trigger", False))
 
 
 def data_out_to_dict(p: DataOut) -> dict:
