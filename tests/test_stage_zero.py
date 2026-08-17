@@ -932,3 +932,86 @@ def test_extra_buffer_consumed_after_fire():
     w.run()
     assert w._states["counter"].state["count"] == 3
     assert "increment" not in w._impls["counter"].buffers
+
+
+# ---------------------------------------------------------------------------
+# 补充:信号关闭 → 缓冲失效(关闭即丢弃,不是组触发才顺带清理)
+# ---------------------------------------------------------------------------
+
+def test_extra_buffer_invalidated_on_signal_close():
+    """端口信号关闭 → 缓冲失效:关闭前到达的旧值丢弃,重开后等待新值
+    (execution-model §3.1/§3.2)。"""
+    lib, registry = make_env()
+    g = Graph(name="buf-invalidate", nodes=[
+        NodeInstance("i", "Input"), NodeInstance("i2", "Input"),
+        NodeInstance("s2", "Switch"), NodeInstance("j", "Join"),
+    ], wires=[
+        Wire("i", "out", "j", "a"),
+        Wire("i2", "out", "s2", "value"),
+        Wire("s2", "selected", "j", "b"),
+    ])
+    w = World(lib, g, registry, seed=0)
+    w.run([Event("i2", "in", "7")])   # b=7 到达;j 等待 a(组未触发,值滞留缓冲)
+    assert w._impls["j"].buffers.get("b") == "7"
+    assert "b" in w._impls["j"].fresh
+    w.run([Event("s2", "enable", INACTIVE, kind="control")])  # 门控 → j.b 信号关闭
+    assert w._input_signal("j", "b") == INACTIVE
+    # 缓冲失效:关闭即丢弃旧值与新鲜标记
+    assert "b" not in w._impls["j"].fresh
+    assert w._impls["j"].buffers.get("b") is None
+    w.run([Event("s2", "enable", ACTIVE, kind="control")])    # 重开:缓冲为空
+    w.run([Event("i", "in", "HELLO")])                        # a 到达
+    assert w.run_outputs.get(("j", "out")) is None            # 旧值不复活,等待新 b
+
+
+def test_extra_data_into_closed_port_discarded():
+    """关闭期间到达的数据视为不存在:不缓冲、不标新鲜,重开后不生效
+    (execution-model §3.1——投递到关闭端口直接丢弃)。"""
+    lib, registry = make_env()
+    g = Graph(name="closed-discard", nodes=[
+        NodeInstance("i", "Input"), NodeInstance("i2", "Input"),
+        NodeInstance("s2", "Switch"), NodeInstance("j", "Join"),
+    ], wires=[
+        Wire("i", "out", "j", "a"),
+        Wire("i2", "out", "s2", "value"),
+        Wire("s2", "selected", "j", "b"),
+    ])
+    w = World(lib, g, registry, seed=0)
+    w.run([Event("s2", "enable", INACTIVE, kind="control")])  # 先关闭 j.b
+    assert w._input_signal("j", "b") == INACTIVE
+    w.run([Event("j", "b", "X")])                             # 数据直达关闭端口
+    assert w._impls["j"].buffers.get("b") is None             # 不缓冲
+    assert "b" not in w._impls["j"].fresh                     # 不标新鲜
+    w.run([Event("s2", "enable", ACTIVE, kind="control")])
+    w.run([Event("i", "in", "HELLO")])
+    assert w.run_outputs.get(("j", "out")) is None            # 关闭期数据不生效
+
+
+def test_extra_same_tick_data_and_gate_close_single_outcome():
+    """同一节点同一次执行同时产出数据与关闭门控 → 有且只有一种结果:
+    下游访问时门控已生效,数据不触发;跨世界重放 trace 一致(确定性)。
+
+    单线程队列 + turn 内固定代码序(先投递数据、turn 结束前信号结算、
+    下游只能在 turn 结束后被访问)是结构保证,不是时序巧合。
+    """
+    lib, registry = make_env()
+    g = Graph(name="same-tick", nodes=[
+        NodeInstance("i2", "Input"), NodeInstance("s2", "Switch"),
+        NodeInstance("c2", "Counter"),
+    ], wires=[
+        Wire("i2", "out", "s2", "value"),
+        Wire("s2", "selected", "c2", "increment"),
+        Wire("s2", "out", "c2", "enable", dst_slot="signal"),
+    ])
+    w = World(lib, g, registry, seed=0)
+    w.run([Event("i2", "in", 0)])   # 数据 0 + 关闭门控(out=假)同 tick 产出
+    assert w._states["c2"].state["count"] == 0                 # 门控先生效:未触发
+    assert not any(e["kind"] == "fire" and e["dst"] == "c2" for e in w.trace)
+    w.run([Event("i2", "in", 5)])   # 数据 5 + 开门控(out=真)
+    assert w._states["c2"].state["count"] == 5                 # 只计新值 5
+    # 确定性:同一图、同一输入序列 → 同一状态与因果 trace
+    w2 = World(lib, g, registry, seed=0)
+    w2.run([Event("i2", "in", 0)])
+    w2.run([Event("i2", "in", 5)])
+    assert w2._states["c2"].state["count"] == 5
+    assert w2.trace == w.trace

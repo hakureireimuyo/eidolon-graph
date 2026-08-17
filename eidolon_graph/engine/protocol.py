@@ -120,6 +120,15 @@ class NodeImpl(ABC):
             if p not in bound:
                 self._buffers.pop(p, None)
 
+    def clear_input(self, port: str) -> None:
+        """端口信号关闭 → 缓冲失效:丢弃值与新鲜标记(重开后等待新值)。
+
+        与 consume_inputs(组触发后消费)不同:这是信号关闭的清理——关闭的
+        端口视为不存在,关闭期间到达或关闭前遗留的数据不参与任何后续计算。
+        """
+        self._fresh.discard(port)
+        self._buffers.pop(port, None)
+
     def init(self, ctx: InitContext) -> dict[str, Any] | None:
         """__init__:实例创建时执行一次(初始化输入就绪后);返回初始状态增量。"""
         return None

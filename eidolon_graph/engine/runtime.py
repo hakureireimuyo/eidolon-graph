@@ -342,6 +342,10 @@ class World:
             for (dn, dp, _dslot) in self.compiled.out_edges.get((nid, c, "signal"), []):
                 if dp in self.compiled.types[dn].control_in_map():
                     self._set_ctrl(dn, dp, lvl, src=nid, src_port=c)
+                else:
+                    # 信号槽目标(数据端口):暂停期未唤醒,恢复时补唤醒(重算幂等,
+                    # 只有电平真变化才会继续级联)
+                    self._invalidate(dn, dp, src=nid, src_port=c)
         for (nid, p), lvl in self._pending_signal.items():
             for (dn, dp, dslot) in self.compiled.out_edges.get((nid, p, "data"), []):
                 if dslot == "signal" and dp in self.compiled.types[dn].control_in_map():
@@ -462,7 +466,12 @@ class World:
         front=True(内部投递):插队队首——因果路径优先走完(深度优先遍历),
         一个事件的传播路径先于兄弟种子结算,路径尽头由 fresh/fired_once 截断。
         front=False(宿主注入):按注入序入队队尾。
+
+        端口信号关闭 → 数据视为不存在:直接丢弃不唤醒(缓冲失效——关闭
+        期间到达的数据不参与计算,重开后等待新值)。
         """
+        if self._input_signal(nid, port) == INACTIVE:
+            return
         self._impls[nid].receive(port, value)
         self._note(Mark(kind=K_DATA, port=port, src=src, src_port=src_port,
                         src_slot="data"), nid)
@@ -502,6 +511,12 @@ class World:
         nt = self.compiled.types[nid]
         st = self._states[nid]
         turn = self._turn(nid)
+        # 0) 端口信号关闭 → 缓冲失效:关闭期间到达或关闭前遗留的旧值丢弃,
+        #    重开后等待新值(execution-model §3.1/§3.2)。输入信号无持久
+        #    存储、访问时现算,清理挂在每次访问上(幂等)。
+        for p in nt.data_in:
+            if self._input_signal(nid, p.name) == INACTIVE:
+                self._impls[nid].clear_input(p.name)
         # 1) 初始化(__init__):完成前方法组不执行
         if not st.initialized:
             if not self._try_init(nid):
@@ -655,8 +670,11 @@ class World:
             if decl.global_write is not None:
                 self.globals_[decl.global_write] = value
         # 控制输出(仅信号节点):显式写电平,未写保持;沿信号线投递到下游控制输入
-        # (连到数据端口信号的线不投递——下游输入信号按需从 control_out_levels 推导)
+        # (连到数据端口信号的线不投递电平——下游输入信号按需从 control_out_levels
+        # 推导;但电平变化必须唤醒下游,关闭传播(熄火)不能依赖下游恰好被其他事件
+        # 访问——数据投递对关闭端口直接丢弃,不会再顺带唤醒)
         for c, lvl in out.control_out.items():
+            old = self.control_out_levels.get((nid, c))
             self.control_out_levels[(nid, c)] = lvl
             if self._paused:  # 传播闸门:电平挂起,不投递
                 self._pending_ctrl[(nid, c)] = lvl
@@ -664,6 +682,8 @@ class World:
             for (dn, dp, _dslot) in self.compiled.out_edges.get((nid, c, "signal"), []):
                 if dp in self.compiled.types[dn].control_in_map():
                     self._set_ctrl(dn, dp, lvl, src=nid, src_port=c)
+                elif lvl != old:
+                    self._invalidate(dn, dp, src=nid, src_port=c)
 
     # ------------------------------------------------------------------
     # 信号
