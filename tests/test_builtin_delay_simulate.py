@@ -1,0 +1,255 @@
+"""Delay 延时节点 + Simulate 模拟节点 + 配置字段 asset_ref 运行时解析。
+
+覆盖:
+- Delay:同步模式按轮倒计时输出、新触发重置、schedule 装填语义、
+  实时模式(装填后按秒发射——源节点组触发后重查调度的引擎修复);
+- Simulate:ok(长时间运行后正确输出)/ error(异常策略:不产出 + 日志 + 熔断)/
+  hang(真实卡死:run 永不返回、无输出);
+- 配置语义扩展:asset_ref 配置字段经 World(runtime_assets=...) 解析成运行时对象,
+  初始化后冻结;缺失绑定构造即报错;实例覆盖/SetConfig 编辑后重新解析;
+  快照/恢复不涉及连接对象。
+"""
+
+import threading
+import time
+
+import pytest
+
+from eidolon_graph.engine import (Event, NodeImpl, NodeRegistry, ScheduleContext,
+                                  SetConfig, TickContext, TickOutput, World)
+from eidolon_graph.engine.builtins import register_builtins
+from eidolon_graph.model import (Annot, AssetLibrary, ConfigField, DataIn, DataOut,
+                                 Graph, ImplBinding, InputGroup, NodeInstance,
+                                 NodeType, ServiceAsset, Wire)
+
+
+def make_env():
+    lib = AssetLibrary()
+    registry = NodeRegistry()
+    register_builtins(lib, registry)
+    return lib, registry
+
+
+# ---------------------------------------------------------------------------
+# Delay
+# ---------------------------------------------------------------------------
+
+def make_delay_graph():
+    return Graph(name="delay", nodes=[
+        NodeInstance("in_delay", "Input"),
+        NodeInstance("in_trigger", "Input"),
+        NodeInstance("delay", "Delay"),
+        NodeInstance("printer", "Printer"),
+    ], wires=[
+        Wire("in_delay", "out", "delay", "delay"),
+        Wire("in_trigger", "out", "delay", "trigger"),
+        Wire("delay", "out", "printer", "msg"),
+    ])
+
+
+def fire(w, delay, payload):
+    w.run([Event("in_delay", "in", delay), Event("in_trigger", "in", payload)])
+
+
+def test_delay_outputs_after_n_epochs():
+    lib, registry = make_env()
+    w = World(lib, make_delay_graph(), registry)
+    fire(w, 2, "A")          # 第 1 轮:装填 remaining=2
+    assert w._states["printer"].state["last_msg"] is None
+    w.run()                  # 第 2 轮:remaining=1
+    assert w._states["printer"].state["last_msg"] is None
+    w.run()                  # 第 3 轮:remaining=0 → 主动输出
+    assert w._states["printer"].state["last_msg"] == "A"
+    w.run()                  # 空载:不再输出
+    assert w._states["printer"].state["last_msg"] == "A"
+
+
+def test_delay_retrigger_resets_countdown():
+    lib, registry = make_env()
+    w = World(lib, make_delay_graph(), registry)
+    fire(w, 2, "A")          # 装填 remaining=2
+    fire(w, 3, "B")          # 重触发:重置 remaining=3(覆盖旧倒计时)
+    w.run()                  # remaining=2
+    w.run()                  # remaining=1
+    assert w._states["printer"].state["last_msg"] is None  # "A" 已被覆盖,永不输出
+    w.run()                  # remaining=0 → 输出 "B"
+    assert w._states["printer"].state["last_msg"] == "B"
+
+
+def test_delay_schedule_armed_only():
+    impl = __import__("eidolon_graph.engine.builtins.delay", fromlist=["DelayImpl"]).DelayImpl()
+    assert impl.schedule(ScheduleContext(state={"pending": "x"}, config={})) == 1.0
+    assert impl.schedule(ScheduleContext(state={"pending": None}, config={})) is None
+
+
+def test_delay_realtime_ticks_per_second():
+    """实时模式:装填后按秒发射(delay=1 → 约 1 秒后输出)。
+
+    依赖引擎修复:源节点的组触发后按最新状态重查调度——否则装填后
+    无登记周期,世界线程永远不会再唤醒本节点。
+    """
+    lib, registry = make_env()
+    w = World(lib, make_delay_graph(), registry, realtime=True)
+    w.start()
+    try:
+        fire(w, 1, "A")
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if w._states["printer"].state["last_msg"] == "A":
+                break
+            time.sleep(0.05)
+        assert w._states["printer"].state["last_msg"] == "A"
+    finally:
+        w.stop()
+
+
+# ---------------------------------------------------------------------------
+# Simulate
+# ---------------------------------------------------------------------------
+
+def make_simulate_graph(config):
+    return Graph(name="sim", nodes=[
+        NodeInstance("in_trigger", "Input"),
+        NodeInstance("sim", "Simulate", config=config),
+        NodeInstance("out", "Output"),
+    ], wires=[
+        Wire("in_trigger", "out", "sim", "trigger"),
+        Wire("sim", "result", "out", "msg"),
+    ])
+
+
+def test_simulate_ok_produces_output_after_work():
+    lib, registry = make_env()
+    w = World(lib, make_simulate_graph({"mode": "ok", "work_ms": 0}), registry)
+    w.run([Event("in_trigger", "in", "hello")])
+    assert w._states["out"].state["lines"] == ["hello"]
+
+
+def test_simulate_error_raises_and_trips_fuse():
+    lib, registry = make_env()
+    w = World(lib, make_simulate_graph(
+        {"mode": "error", "work_ms": 0, "error_msg": "boom"}), registry)
+    w.run([Event("in_trigger", "in", "x")])
+    assert w._states["sim"].fault_count == 1
+    assert w._states["out"].state["lines"] == []          # 异常:不产出
+    assert any(e["level"] == "error" and "RuntimeError" in e["message"]
+               for e in w.log)
+    for _ in range(4):                                    # 连续异常 → 熔断
+        w.run([Event("in_trigger", "in", "x")])
+    assert w._states["sim"].circuit_open
+    assert any(e["level"] == "warning" and "熔断" in e["message"] for e in w.log)
+
+
+def test_simulate_hang_blocks_forever_without_output():
+    """真实卡死:run 永不返回、无任何输出(daemon 线程随进程退出,不 join)。"""
+    lib, registry = make_env()
+    w = World(lib, make_simulate_graph({"mode": "hang", "work_ms": 0}), registry)
+    returned = {}
+    t = threading.Thread(target=lambda: (
+        w.run([Event("in_trigger", "in", "x")]), returned.setdefault("done", True)),
+        daemon=True)
+    t.start()
+    time.sleep(0.4)
+    assert t.is_alive()                       # run 未返回:世界线程被卡死
+    assert not returned
+    assert w._states["out"].state["lines"] == []  # 无任何输出
+
+
+# ---------------------------------------------------------------------------
+# 配置字段语义扩展:asset_ref 运行时解析(初始化后不变)
+# ---------------------------------------------------------------------------
+
+class FakeConn:
+    """模拟宿主建立的数据库连接(不可序列化、有内部状态)。"""
+
+    def __init__(self, label):
+        self.label = label
+        self.calls = 0
+
+    def query(self):
+        self.calls += 1
+        return f"{self.label}#{self.calls}"
+
+
+DB_QUERY = NodeType(
+    name="DbQuery",
+    data_in=[DataIn("ask")],
+    data_out=[DataOut("answer")],
+    config=[ConfigField("db", "memory_db", asset_ref="service")],
+    groups=[InputGroup("run", inputs=["ask"], outputs=["answer"])],
+    impl=ImplBinding(kind="code", name="DbQuery"),
+)
+
+
+class DbQueryImpl(NodeImpl):
+    def doc(self) -> dict:
+        return {"summary": "测试:经配置字段 asset_ref 使用运行时注入的连接对象。"}
+
+    def tick(self, ctx: TickContext) -> TickOutput:
+        return TickOutput(data_out={"answer": ctx.config["db"].query()})
+
+
+def make_db_env(config=None):
+    lib, registry = make_env()
+    lib.add_service(ServiceAsset(name="memory_db", declaration={"dsn": "sqlite://:memory:"}))
+    lib.add_service(ServiceAsset(name="archive_db", declaration={"dsn": "sqlite://archive"}))
+    lib.add_node_type(DB_QUERY)
+    registry.register("DbQuery", DbQueryImpl)
+    g = Graph(name="db", nodes=[
+        NodeInstance("in1", "Input"),
+        NodeInstance("q", "DbQuery", config=config or {}),
+        NodeInstance("out", "Output"),
+    ], wires=[
+        Wire("in1", "out", "q", "ask"),
+        Wire("q", "answer", "out", "msg"),
+    ])
+    return lib, registry, g
+
+
+def test_asset_ref_resolved_from_runtime_assets_and_frozen():
+    lib, registry, g = make_db_env()
+    conn = FakeConn("main")
+    w = World(lib, g, registry, runtime_assets={"memory_db": conn})
+    w.run([Event("in1", "in", "q1")])
+    w.run([Event("in1", "in", "q2")])
+    # 同一连接对象:调用计数连续(初始化后不变,不深拷贝)
+    assert w._states["out"].state["lines"] == ["main#1", "main#2"]
+    assert conn.calls == 2
+
+
+def test_asset_ref_missing_binding_fails_at_construction():
+    lib, registry, g = make_db_env()
+    with pytest.raises(KeyError, match="memory_db"):
+        World(lib, g, registry)  # 宿主未注入运行时绑定 → 构造即报错(引用即校验)
+
+
+def test_asset_ref_instance_override_and_setconfig_reparse():
+    lib, registry, g = make_db_env(config={"db": "archive_db"})
+    main_conn, archive_conn = FakeConn("main"), FakeConn("archive")
+    w = World(lib, g, registry, runtime_assets={"memory_db": main_conn,
+                                                "archive_db": archive_conn})
+    w.run([Event("in1", "in", "q1")])
+    assert w._states["out"].state["lines"] == ["archive#1"]   # 实例覆盖生效
+    # SetConfig 编辑:改资产名 → 编辑事务后重新解析
+    res = w.edit([SetConfig("q", {"db": "memory_db"})])
+    assert res.ok
+    w.run([Event("in1", "in", "q2")])
+    assert w._states["out"].state["lines"] == ["archive#1", "main#1"]
+
+
+def test_asset_ref_none_skips_resolution():
+    lib, registry, g = make_db_env(config={"db": None})
+    w = World(lib, g, registry)  # None 显式不绑定:构造不报错
+    assert w._resolved_config["q"]["db"] is None
+
+
+def test_snapshot_restore_keeps_resolved_connection():
+    lib, registry, g = make_db_env()
+    conn = FakeConn("main")
+    w = World(lib, g, registry, runtime_assets={"memory_db": conn})
+    w.run([Event("in1", "in", "q1")])
+    snap = w.snapshot()                    # 快照不涉及连接对象(不在世界状态内)
+    w.restore(snap)
+    w.run([Event("in1", "in", "q2")])
+    assert w._states["out"].state["lines"] == ["main#1", "main#2"]  # 同一连接续用
+    assert conn.calls == 2

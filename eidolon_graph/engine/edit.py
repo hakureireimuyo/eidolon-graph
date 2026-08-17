@@ -259,6 +259,10 @@ def _apply_migration(world: World, draft: Graph, plan: MigrationPlan, op_count: 
         new_impls[nid] = impl
     world._states = new_states
     world._impls = new_impls
+    # 配置重新解析:编辑(SetConfig / ChangeImpl)后 asset_ref 绑定按最新实例配置重算
+    world._resolved_config = {
+        ni.node_id: world._resolve_config(ni.node_id, world.compiled.types[ni.node_id])
+        for ni in draft.nodes}
     # 每节点独立随机流:新节点按 (世界种子, 节点 id) 派生,老节点流不重建
     for nid in new_states:
         if nid not in world.rngs:

@@ -1,7 +1,7 @@
 """内置节点库:一节点一文件,全部节点归属内核(运行时不缺节点)。
 
 Clock / Counter / Comparator / AND / OR / NOT / Switch / Latch / Timer /
-Pulse / Threshold / Printer / Random / Join / Output / Input。
+Delay / Pulse / Threshold / Printer / Random / Simulate / Join / Output / Input。
 
 - 全部是**普通节点类型资产**(运行时对它们零特殊处理)——它们同时是节点协议
   的自证与编辑器的基础元件;
@@ -26,6 +26,7 @@ from .and_node import AND_NODE, AndImpl
 from .clock import CLOCK, ClockImpl
 from .comparator import COMPARATOR, ComparatorImpl
 from .counter import COUNTER, CounterImpl
+from .delay import DELAY, DelayImpl
 from .input import INPUT, InputImpl
 from .join import JOIN, JoinImpl
 from .latch import LATCH, LatchImpl
@@ -35,6 +36,7 @@ from .output import OUTPUT, OutputImpl
 from .printer import PRINTER, PrinterImpl
 from .pulse import PULSE, PulseImpl
 from .random import RANDOM, RandomImpl
+from .simulate import SIMULATE, SimulateImpl
 from .switch import SWITCH, SwitchImpl
 from .threshold import THRESHOLD, ThresholdImpl
 from .timer import TIMER, TimerImpl
@@ -50,9 +52,11 @@ _BUILTINS: list[tuple[NodeType, type[NodeImpl]]] = [
     (SWITCH, SwitchImpl),
     (LATCH, LatchImpl),
     (TIMER, TimerImpl),
+    (DELAY, DelayImpl),
     (PULSE, PulseImpl),
     (PRINTER, PrinterImpl),
     (RANDOM, RandomImpl),
+    (SIMULATE, SimulateImpl),
     (JOIN, JoinImpl),
     (OUTPUT, OutputImpl),
     (INPUT, InputImpl),

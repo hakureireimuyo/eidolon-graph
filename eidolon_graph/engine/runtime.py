@@ -140,6 +140,7 @@ class World:
                  seed: int = 0,
                  fuse_limit: int = 5, fuse_cool_ticks: int = 10,
                  realtime: bool = False,
+                 runtime_assets: dict[str, Any] | None = None,
                  _stack: tuple[str, ...] = ()) -> None:
         self.lib = lib
         self.registry = registry
@@ -190,6 +191,11 @@ class World:
         self._seq = 0  # 本轮因果传播序号(确定,非时间戳)
         self.fuse_limit = fuse_limit
         self.fuse_cool_ticks = fuse_cool_ticks
+        # 运行时注入资产(宿主建立的运行时对象,如数据库连接):配置字段 asset_ref
+        # 按名解析;初始化时解析一次后冻结(初始化后不变),独立于快照(不持久化、
+        # 不深拷贝——连接对象不可深拷贝)
+        self.runtime_assets: dict[str, Any] = dict(runtime_assets or {})
+        self._resolved_config: dict[str, dict[str, Any]] = {}
         # 换实现的宿主迁移函数:new_type_name → (旧状态 dict, 新 NodeType) → 新状态 dict
         self.impl_migrations: dict[str, Any] = {}
         self._impls: dict[str, NodeImpl] = {}
@@ -224,6 +230,7 @@ class World:
                 self.control_out_levels[(ni.node_id, c.name)] = c.default_level
             for p in nt.data_out:
                 self.output_signals[(ni.node_id, p.name)] = ACTIVE
+            self._resolved_config[ni.node_id] = self._resolve_config(ni.node_id, nt)
 
     def _build_inner(self, ni: NodeInstance, nt: NodeType, stack: tuple[str, ...]) -> "World":
         gname = nt.impl.graph
@@ -234,6 +241,7 @@ class World:
         inner_seed = derive_seed(self.seed, f"{ni.node_id}:{gname}")
         return World(self.lib, self.lib.graphs[gname], self.registry, seed=inner_seed,
                      fuse_limit=self.fuse_limit, fuse_cool_ticks=self.fuse_cool_ticks,
+                     runtime_assets=self.runtime_assets,
                      _stack=stack + (self.graph.name,))
 
     # ------------------------------------------------------------------
@@ -303,7 +311,7 @@ class World:
                     continue
                 nt = self.compiled.types[nid]
                 ctx = ScheduleContext(state=self._states[nid].state,
-                                      config=nt.resolve_config(self._node_map[nid].config))
+                                      config=dict(self._resolved_config[nid]))
                 if self._impls[nid].schedule(ctx) is not None:
                     self._next_due[nid] = 0.0  # 首轮立即到期
         self._spawn_sched()
@@ -410,7 +418,7 @@ class World:
             return
         nt = self.compiled.types[nid]
         ctx = ScheduleContext(state=self._states[nid].state,
-                              config=nt.resolve_config(self._node_map[nid].config))
+                              config=dict(self._resolved_config[nid]))
         delay = self._impls[nid].schedule(ctx)
         if delay is None:
             self._next_due.pop(nid, None)
@@ -566,8 +574,35 @@ class World:
             if all(p in self._impls[nid].fresh for p in trigger):
                 turn.fired_groups.add(g.name)
                 self._fire(nid, nt, st, group=g.name, ports=tuple(g.inputs))
+                # 源节点的组触发可能改变发射状态(如 Delay 装填、Pulse 调制速率):
+                # 按最新状态重查调度——实时模式下装填的倒计时不被睡眠
+                if nt.is_source():
+                    self._reschedule(nid)
         # 5) 输出信号自动传导重算(每轮至多两次,见 _signals)
         self._signals(nid)
+
+    def _resolve_config(self, nid: str, nt: NodeType) -> dict[str, Any]:
+        """实例配置 = 类型默认 + 编辑期覆盖 + asset_ref 运行时解析(初始化后不变)。
+
+        asset_ref 字段的值存的是资产名(如 "memory_db");宿主构造 World 时注入
+        已建立的对象表(runtime_assets: 资产名 → 连接/矩阵等运行时对象),此处按
+        名解析成对象——解析一次、冻结到世界生命周期,不随每次 tick 重建。
+        引用即校验:配置引用的资产名没有运行时对象 → 构造时立即报错(失败要早);
+        值为 None 的 asset_ref 字段不解析(字段可选)。
+        """
+        cfg = nt.resolve_config(self._node_map[nid].config)
+        for f in nt.config:
+            if not f.asset_ref:
+                continue
+            name = cfg.get(f.name)
+            if name is None:
+                continue
+            if name not in self.runtime_assets:
+                raise KeyError(
+                    f"节点 [{nid}] 配置字段 '{f.name}' 引用的资产 '{name}' 没有运行时"
+                    f"绑定:宿主需在构造 World 时经 runtime_assets 注入该资产对象")
+            cfg[f.name] = self.runtime_assets[name]
+        return cfg
 
     def _try_init(self, nid: str) -> bool:
         """初始化输入全部就绪 → 执行 __init__ 一次;否则继续等待(方法组不执行)。"""
@@ -584,7 +619,7 @@ class World:
                 return False  # 尚未就绪
             vals[p] = v
         ctx = InitContext(data_in=vals,
-                          config=nt.resolve_config(self._node_map[nid].config),
+                          config=dict(self._resolved_config[nid]),
                           inner=st.inner)
         extra = self._impls[nid].init(ctx)
         if extra:
@@ -626,7 +661,7 @@ class World:
         state = deepcopy(st.state)
         ctx = TickContext(run_no=self.run_no, group=group, rng=self.rngs[nid],
                           data_in=data_in, control_in=control_in, state=state,
-                          config=nt.resolve_config(self._node_map[nid].config),
+                          config=dict(self._resolved_config[nid]),
                           closed_in=frozenset(closed_in), inner=st.inner)
         try:
             out = self._impls[nid].tick(ctx)

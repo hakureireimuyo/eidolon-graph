@@ -40,7 +40,7 @@ class TickContext:
     data_in: dict[str, Any]           # 本组输入已解析值(关闭的端口不出现)
     control_in: dict[str, Level]      # 电平永远有定义(默认电平兜底)
     state: dict[str, Any]             # 当前状态深拷贝;返回新值经 out.state 合并
-    config: dict[str, Any]            # 只读配置(类型默认 + 编辑期覆盖)
+    config: dict[str, Any]            # 只读配置(类型默认 + 编辑期覆盖;asset_ref 字段已解析为运行时对象)
     closed_in: frozenset[str] = field(default_factory=frozenset)  # 本组中被信号关闭的输入
     inner: Any = None                 # 子图节点:内嵌世界(领域节点忽略)
 
@@ -59,7 +59,7 @@ class InitContext:
     """初始化(__init__)上下文:构造参数;返回初始状态增量(与字段默认值合并)。"""
 
     data_in: dict[str, Any]     # 初始化输入端口已解析值(关闭的端口不出现)
-    config: dict[str, Any]      # 只读配置
+    config: dict[str, Any]      # 只读配置(asset_ref 字段已解析为运行时对象,初始化后不变)
     inner: Any = None           # 子图节点:内嵌世界
 
 
