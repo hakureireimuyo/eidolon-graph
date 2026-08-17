@@ -294,6 +294,11 @@ def _validate_wires(rep: ValidationReport, lib: AssetLibrary, graph: Graph) -> N
         if not (dst_data or dst_ctrl):
             rep.error(f"连线目标端口 '{w.dst_node}.{w.dst_port}' 不是输入端口")
             continue
+        # 触发端口(事件端口)不接受信号线:信号屏蔽对事件无意义,触发只认数据到达
+        if w.dst_slot == "signal" and dst_data and dnt.data_in_map()[w.dst_port].trigger:
+            rep.error(f"触发端口 '{w.dst_node}.{w.dst_port}' 不接受信号线"
+                      f"(事件端口:触发只认数据到达,信号屏蔽无意义)")
+            continue
         if src_data:
             if w.dst_slot == "signal":
                 # 数据输出的信号端口:电平由自动传导决定(实现永不写信号),但可

@@ -15,6 +15,8 @@ from eidolon_graph.model import (AssetLibrary, DataIn, DataOut, Graph, ImplBindi
                                  InputGroup, NodeInstance, NodeType, Wire, serialize,
                                  validate)
 
+# 注意:Wire 在下方信号线校验测试中使用
+
 
 def make_env():
     lib = AssetLibrary()
@@ -62,6 +64,27 @@ def test_trigger_port_with_global_read_rejected():
     rep = validate(lib, g)
     assert not rep.ok
     assert any("触发端口" in e and "绑定" in e for e in rep.errors)
+
+
+# ---------------------------------------------------------------------------
+# 校验:触发端口不接受信号线(事件端口:触发只认数据到达,信号屏蔽无意义)
+# ---------------------------------------------------------------------------
+
+def test_trigger_port_rejects_signal_wire():
+    lib = AssetLibrary()
+    lib.add_node_type(NodeType(
+        name="Src", data_out=[DataOut("o")], auto=True,
+        impl=ImplBinding(kind="code", name="Src")))
+    lib.add_node_type(_type_with([DataIn("ev", trigger=True)]))
+    g = Graph(name="g", nodes=[
+        NodeInstance("s", "Src"),
+        NodeInstance("n", "T"),
+    ], wires=[
+        Wire("s", "o", "n", "ev", dst_slot="signal"),
+    ])
+    rep = validate(lib, g)
+    assert not rep.ok
+    assert any("触发端口" in e and "信号线" in e for e in rep.errors)
 
 
 # ---------------------------------------------------------------------------
