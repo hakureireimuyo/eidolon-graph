@@ -12,7 +12,7 @@
 
 | # | 边界 | 判定 | 摘要 |
 |---|------|------|------|
-| 1 | Data vs Availability | ⚠️ | "值"与"新鲜"已分开存储,但触发判定策略硬编码在引擎、不可按节点声明;`trigger=True` 是声明层压缩 |
+| 1 | Data vs Availability | ✅ **已修复(1.0.0-0)** | TriggerIn 独立端口 + 组级触发策略落地;`DataIn.trigger` 标记与引擎硬编码判定移除;旧资产拒绝 |
 | 2 | Signal vs Enable | ✅ | 事件(变化)与状态(电平)已分离;enable / level 已显式建模 |
 | 3 | Port vs Connection | ✅ | 静态接口 / 拓扑关系 / 运行时状态三层清晰;Mark / NodeTurn / NodeState 三分是系统先例 |
 | 4 | Data vs Buffer | ⚠️ | 存储策略硬编码"一格覆盖 + 消费清空";队列类策略靠节点状态模拟 |
@@ -44,10 +44,13 @@
 2. **校验器因此拒绝信号线连触发端口**:validate.py:297-300 "触发端口不接受信号线(事件端口:触发只认数据到达,信号屏蔽无意义)"——即 graph-trigger-semantics.md §2.3 提案中 `Signal → Trigger` 连接,在当前模型中**不可表达**;
 3. **Buffer 初始放行问题的根**:Buffer 的"put 累积 / flush 取出"依赖**组声明序**(buffer.py:6-8 "同轮 put 与 flush 齐到:按组声明序先 put 后 flush"),"数据是否可被这次 flush 消费"由声明序隐式决定,无显式建模。
 
-### 判定与建议
+### 判定与修复(1.0.0-0)
 
-- fresh(就绪)与 value(数据)存储层已分离 ✅,但**策略层混合**:触发策略(何时该触发)与端口声明(什么数据)仍被压缩——策略不是节点的可编程属性;
-- 建议:按 graph-trigger-semantics.md §4 把"触发产生"提升为节点可声明/可编程的触发策略,`trigger=True` 从声明层标记变为 Trigger Port 或策略的一部分(引擎级修改,成本在运行时的 fresh 判定处 runtime.py:561-580)。
+- fresh(就绪)与 value(数据)存储层已分离 ✅;**策略层混合已在 1.0 修复**:
+  - `DataIn.trigger` 字段移除,独立 `TriggerIn` 端口 + `InputGroup.policy`(ON_ALL_DATA_READY / ON_ANY_DATA / ON_TRIGGER / ON_DATA_AND_TRIGGER)落地;
+  - 引擎组触发判定(runtime.py)按策略执行,`trigger=True` 声明层标记与"触发端口不接受信号线"校验删除(信号线 → TriggerIn 现为合法激活源);
+  - 旧 0.x 资产(含 trigger 标记)主版本不兼容,加载直接拒绝(version bump 1.0.0-0);
+- 触发事件与数据 fresh 同构:组触发后消费清空、未触发保留(等齐语义)、信号关闭一并失效;快照 / 编辑事务 / 暂停恢复均已适配。
 
 ## 3. 边界 2:Signal vs Enable —— ✅ 已分离
 
@@ -182,8 +185,8 @@ State vs Event 的**分离本身已达标**(甚至早于触发语义讨论),差�
 
 | graph-trigger-semantics.md 提案 | 现状 | 差距等级 |
 |--------------------------------|------|---------|
-| 独立 Trigger Port(函数调用级) | `DataIn.trigger=True` 声明标记,引擎零处理;Signal→Trigger 被校验器拒绝 | **引擎级修改** |
-| 节点触发策略(可编程) | 策略硬编码在 `_node_turn`(ON_ALL_REQUIRED_DATA),无声明/脚本入口 | **引擎级修改** |
+| 独立 Trigger Port(函数调用级) | **已实现(1.0.0-0)**:TriggerIn 端口,数据线/信号线均合法,旧标记移除、旧资产拒绝 | 已落地 |
+| 节点触发策略(可编程) | **已实现(1.0.0-0)**:组级 `InputGroup.policy` 四策略;策略可编程(脚本挂载)待脚本系统 | 部分落地 |
 | Trigger 一等语义 + Context | trace 已有访问粒度因果时间线;无 Trigger 对象 / Context / 生命周期事件 | 增量增强 |
 | 脚本节点 Node API(emit_trigger 等) | 无脚本系统;节点请求通道 = 产出 + schedule | 新能力 |
 | 语义职责审计(本文档) | 边界 2 / 3 / 5 / 6 达标;1 / 4 部分压缩;7 是有意识的反向决策 | 已完成 |

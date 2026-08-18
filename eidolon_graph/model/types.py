@@ -24,6 +24,15 @@ ACTIVE = "active"
 INACTIVE = "inactive"
 Level = Literal["active", "inactive"]
 
+# 组触发策略(描述"如何产生 activation",不描述执行逻辑;字符串以便 JSON 直存)
+ON_ALL_DATA_READY = "on_all_data_ready"       # 默认:全部有效连线数据输入有新值 → 触发(现状行为)
+ON_ANY_DATA = "on_any_data"                   # 任一有效连线数据输入有新值 → 触发
+ON_TRIGGER = "on_trigger"                     # 任一 TriggerIn 收到激活(信号电平变化 / 数据到达)→ 触发
+ON_DATA_AND_TRIGGER = "on_data_and_trigger"   # 数据齐(全部有效连线输入有新值)+ 触发事件 → 触发
+TRIGGER_POLICIES = (ON_ALL_DATA_READY, ON_ANY_DATA, ON_TRIGGER, ON_DATA_AND_TRIGGER)
+TriggerPolicy = Literal["on_all_data_ready", "on_any_data", "on_trigger",
+                        "on_data_and_trigger"]
+
 # 常见注解的字符串注册表(序列化时类型存为字符串名;未知名字按 Any 放行)
 _TYPE_REGISTRY: dict[str, Any] = {
     "int": int,
@@ -81,11 +90,8 @@ class DataIn:
     端口被信号禁用时同样回退默认值。全部参数被禁用 → 对应输出端口
     自动禁用(自动传导)。
 
-    trigger(事件端口):主要语义是**触发而非数据**——到达即触发组,载荷可用
-    可忽略(如 Buffer.flush 纯触发、Delay.trigger 触发并回显载荷);与绑定
-    互斥(事件不是持久值,校验器禁止),可与 optional 组合(如 LlmCall._result
-    完成注入端口)。触发判定本就基于"新值到达"(fresh),引擎对 trigger 端口
-    零特殊处理——标记是语义声明,供编辑器/文档/校验消费。
+    数据端口**不再承担触发职责**(1.0 边界 1 修正):"何时执行"由组触发策略
+    (InputGroup.policy)与独立 TriggerIn 端口表达,见 TriggerIn / ON_* 常量。
     """
 
     name: str
@@ -94,11 +100,29 @@ class DataIn:
     const: Any = None
     global_read: str | None = None
     optional: bool = False
-    trigger: bool = False  # 事件端口:主要语义是触发而非数据
 
     def is_bound(self) -> bool:
         """带常量/全局读取绑定 → 不参与触发,值随读随用。"""
         return self.const_set or self.global_read is not None
+
+
+@dataclass
+class TriggerIn:
+    """触发输入端声明:**函数调用级**——到达即请求一次 activation(组触发机会)。
+
+    Trigger 是消费语义,不是数据类型:数据线(载荷可用可忽略)与信号线
+    (电平双沿变化)都可以产生触发事件,但 Data 与 Signal 依然不互通——
+    它们在 Trigger 这个执行语义层汇合(见 docs/graph-trigger-semantics.md §2)。
+
+    - 无绑定 / 无 optional / 无信号槽概念(激活请求不需要"带电"维度);
+    - 未连线合法(裸端口豁免):没有显式触发源 = 仅依赖数据策略激活;
+    - 不进 init_in(初始化输入是数据语义);
+    - 触发事件 = 新激活请求标记(与数据端口的 fresh 同构),组触发后消费清空,
+      未触发时保留(等齐语义);端口信号关闭时事件一并失效。
+    """
+
+    name: str
+    type_annot: Annot = field(default_factory=Annot)  # 载荷类型注解(数据线投递时静态检查)
 
 
 @dataclass
@@ -172,14 +196,17 @@ class ConfigField:
 class InputGroup:
     """输入组声明:一一对应一个输出组(方法/返回值)。
 
-    - 组内全部有效输入收到新值 → 执行该组、该组输入消费清零、产出该组输出;
-    - 组间参数不互传,节点状态(实例字段)共享;
+    - 组 = 函数:inputs = 参数(数据输入端口,须连线、不可绑定),triggers = 调用
+      入口(TriggerIn 端口,激活请求);组触发 = 按 policy 判定(见 ON_* 常量);
+    - 组触发后该组输入消费清零(瞬态),组间参数不互传,节点状态(实例字段)共享;
     - 输出组为空 = void 方法(如参数调制组 [rate] → [])。
     """
 
     name: str
-    inputs: list[str] = field(default_factory=list)   # 数据输入端口名(须连线,不可绑定)
-    outputs: list[str] = field(default_factory=list)  # 数据输出端口名
+    inputs: list[str] = field(default_factory=list)      # 数据输入端口名(须连线,不可绑定)
+    outputs: list[str] = field(default_factory=list)     # 数据输出端口名
+    triggers: list[str] = field(default_factory=list)    # TriggerIn 端口名(激活入口)
+    policy: TriggerPolicy = ON_ALL_DATA_READY            # 触发策略(默认 = 现状行为)
 
 
 @dataclass(frozen=True)

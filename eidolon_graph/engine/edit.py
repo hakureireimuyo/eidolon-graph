@@ -121,6 +121,8 @@ class MigrationPlan:
     # 失去值来源的数据端口:缓冲重置,重新等待新值
     rewarmed_control: list[tuple[str, str]] = field(default_factory=list)
     # 失去来源的控制输入:电平回默认
+    rewarmed_trigger: list[tuple[str, str]] = field(default_factory=list)
+    # 失去触发来源的 TriggerIn:触发事件与电平记录重置
     reimplemented: list[ReimplementRecord] = field(default_factory=list)
     edges_removed: list[Wire] = field(default_factory=list)    # RemoveNode 级联删除的连线
 
@@ -133,15 +135,18 @@ class EditResult:
 
 
 def _protocol_compatible(old: NodeType, new: NodeType) -> bool:
-    """同协议 = 端口集合、输入组、初始化输入、状态字段(名/序)一致。配置不参与(属资产侧)。"""
+    """同协议 = 端口集合、输入组(含触发入口与策略)、初始化输入、状态字段(名/序)一致。配置不参与(属资产侧)。"""
     return (
         [p.name for p in old.data_in] == [p.name for p in new.data_in]
         and [p.name for p in old.data_out] == [p.name for p in new.data_out]
+        and [p.name for p in old.trigger_in] == [p.name for p in new.trigger_in]
         and [(c.name, c.semantic) for c in old.control_in]
         == [(c.name, c.semantic) for c in new.control_in]
         and [c.name for c in old.control_out] == [c.name for c in new.control_out]
-        and [(g.name, tuple(g.inputs), tuple(g.outputs)) for g in old.groups]
-        == [(g.name, tuple(g.inputs), tuple(g.outputs)) for g in new.groups]
+        and [(g.name, tuple(g.inputs), tuple(g.outputs), tuple(g.triggers), g.policy)
+             for g in old.groups]
+        == [(g.name, tuple(g.inputs), tuple(g.outputs), tuple(g.triggers), g.policy)
+            for g in new.groups]
         and list(old.init_in) == list(new.init_in)
         and old.auto == new.auto
         and [f.name for f in old.state] == [f.name for f in new.state]
@@ -166,6 +171,7 @@ def _compute_plan(world: World, draft: Graph, ops: list[EditOp]) -> MigrationPla
     # 换源在一个事务内完成([RemoveEdge, AddEdge])同样重置——旧源的缓冲值不能混入新源。
     touched: set[tuple[str, str]] = set()
     touched_control: set[tuple[str, str]] = set()
+    touched_trigger: set[tuple[str, str]] = set()
     for op in ops:
         if isinstance(op, AddNode):
             plan.added.append(op.node.node_id)
@@ -182,14 +188,22 @@ def _compute_plan(world: World, draft: Graph, ops: list[EditOp]) -> MigrationPla
                     touched.add((w.dst_node, w.dst_port))
                 elif w.dst_port in world.compiled.types[w.dst_node].control_in_map():
                     touched_control.add((w.dst_node, w.dst_port))
+                elif w.dst_port in world.compiled.types[w.dst_node].trigger_in_map():
+                    touched_trigger.add((w.dst_node, w.dst_port))
         elif isinstance(op, RemoveEdge):
             if op.wire.dst_slot == "data":
                 touched.add((op.wire.dst_node, op.wire.dst_port))
             elif op.wire.dst_port in world.compiled.types[op.wire.dst_node].control_in_map():
                 touched_control.add((op.wire.dst_node, op.wire.dst_port))
+            elif op.wire.dst_port in world.compiled.types[op.wire.dst_node].trigger_in_map():
+                touched_trigger.add((op.wire.dst_node, op.wire.dst_port))
         elif isinstance(op, AddEdge):
             if op.wire.dst_slot == "data":
                 touched.add((op.wire.dst_node, op.wire.dst_port))
+            elif op.wire.dst_port in world.compiled.types[op.wire.dst_node].control_in_map():
+                touched_control.add((op.wire.dst_node, op.wire.dst_port))
+            elif op.wire.dst_port in world.compiled.types[op.wire.dst_node].trigger_in_map():
+                touched_trigger.add((op.wire.dst_node, op.wire.dst_port))
         elif isinstance(op, ChangeImpl):
             nid = op.node_id
             old_nt = world.compiled.types[nid]
@@ -209,6 +223,9 @@ def _compute_plan(world: World, draft: Graph, ops: list[EditOp]) -> MigrationPla
     for (nid, port) in touched_control:
         if nid in surviving:
             plan.rewarmed_control.append((nid, port))
+    for (nid, port) in touched_trigger:
+        if nid in surviving:
+            plan.rewarmed_trigger.append((nid, port))
     plan.kept = sorted(old_ids - set(plan.removed))
     return plan
 
@@ -249,6 +266,7 @@ def _apply_migration(world: World, draft: Graph, plan: MigrationPlan, op_count: 
                     else world.registry.get(nt.impl.name or nt.name)())
             impl._buffers = dict(old_impl._buffers)  # 输入缓冲随节点保留(新实例接管)
             impl._fresh = set(old_impl._fresh)
+            impl._trigger_fresh = set(old_impl._trigger_fresh)  # 触发事件一并保留
         else:
             st = NodeState(state=nt.default_state(), initialized=not bool(nt.init_in))
             if nt.impl.kind == "subgraph":
@@ -274,14 +292,19 @@ def _apply_migration(world: World, draft: Graph, plan: MigrationPlan, op_count: 
     # 2) 缓冲/电平表迁移(缓冲在节点基类):剪除消失的端口;失去来源的端口重置
     rewarm_set = set(plan.rewarmed)
     rewarm_ctrl_set = set(plan.rewarmed_control)
+    rewarm_trigger_set = set(plan.rewarmed_trigger)
     for nid in new_states:
         nt = world.compiled.types[nid]
         declared_ins = set(nt.data_in_map())
+        declared_triggers = set(nt.trigger_in_map())
         impl = new_impls[nid]
         impl._buffers = {p: v for p, v in impl._buffers.items()
                          if p in declared_ins and (nid, p) not in rewarm_set}
         impl._fresh = {p for p in impl._fresh
                        if p in declared_ins and (nid, p) not in rewarm_set}
+        impl._trigger_fresh = {p for p in impl._trigger_fresh
+                               if p in declared_triggers
+                               and (nid, p) not in rewarm_trigger_set}
     world.control_in_levels = {(nid, port): lvl for (nid, port), lvl
                                in world.control_in_levels.items()
                                if nid in new_states and port in
@@ -295,6 +318,11 @@ def _apply_migration(world: World, draft: Graph, plan: MigrationPlan, op_count: 
                             in world.output_signals.items()
                             if nid in new_states and port in
                             world.compiled.types[nid].data_out_map()}
+    world.trigger_in_levels = {(nid, port): lvl for (nid, port), lvl
+                               in world.trigger_in_levels.items()
+                               if nid in new_states and port in
+                               world.compiled.types[nid].trigger_in_map()
+                               and (nid, port) not in rewarm_trigger_set}
     for nid in new_states:
         nt = world.compiled.types[nid]
         for c in nt.control_in:
@@ -303,6 +331,11 @@ def _apply_migration(world: World, draft: Graph, plan: MigrationPlan, op_count: 
             world.control_out_levels.setdefault((nid, c.name), c.default_level)
         for p in nt.data_out:
             world.output_signals.setdefault((nid, p.name), "active")
+        for t in nt.trigger_in:
+            # 信号线触发输入:电平记录按当前推导重算(防恢复/编辑后误判为"变化")
+            if (nid, t.name, "signal") in world.compiled.in_edge:
+                world.trigger_in_levels.setdefault((nid, t.name),
+                                                   world._input_signal(nid, t.name))
 
     # 3) 初始化输入(__init__):新节点/重置节点绑定齐备的立即执行,连线的等待上游首值
     for ni in draft.nodes:

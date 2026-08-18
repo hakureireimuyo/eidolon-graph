@@ -74,19 +74,24 @@ class ScheduleContext:
 class NodeImpl(ABC):
     """节点实现协议:实现节点协议 = 注册为能力,运行时只认接口不认实现。
 
-    基类承载输入缓冲——节点的独立存储区域(不可重载,由运行时调用):
+    基类承载输入缓冲与触发事件——节点的独立存储区域(不可重载,由运行时调用):
     - receive(port, value):输入到达——一格缓冲,新值覆盖,标记新鲜;
+    - receive_trigger(port):激活请求到达(TriggerIn:信号线电平变化 / 数据线
+      到达)——标记触发事件,不存值(载荷走 receive);
     - consume_inputs(ports, bound):触发后消费——新鲜标记清零,未绑定端口
       的缓冲清空(连线输入是瞬态事件,被消费即拿走;绑定端口 const/全局读取
-      是持久输入,不参与触发、不消费);
-    - 每次输入到达后,运行时检测现有数据与信号,条件满足即一次性完成函数
-      调用(被信号关闭的参数旁路,由实现回退默认值),随后缓冲清空。
+      是持久输入,不参与触发、不消费);触发事件由 clear_triggers 消费;
+    - clear_input(port):端口信号关闭 → 缓冲与触发事件一并失效;
+    - 每次输入/激活到达后,运行时按组触发策略检测条件,满足即一次性完成
+      函数调用(被信号关闭的参数旁路,由实现回退默认值),随后缓冲清空。
     """
 
     def __init__(self) -> None:
-        # 输入缓冲:端口名 → 最近值(键存在即有值);fresh = 未消费的新输入
+        # 输入缓冲:端口名 → 最近值(键存在即有值);fresh = 未消费的新输入;
+        # trigger_fresh = 未消费的激活请求(TriggerIn 端口,与 fresh 同构)
         self._buffers: dict[str, Any] = {}
         self._fresh: set[str] = set()
+        self._trigger_fresh: set[str] = set()
 
     def doc(self) -> dict:
         """节点说明书:结构化纯文本(与编辑器展示对接的接口之一)。
@@ -108,10 +113,28 @@ class NodeImpl(ABC):
         """未消费的新鲜输入端口。"""
         return self._fresh
 
+    @property
+    def trigger_fresh(self) -> set[str]:
+        """未消费的触发事件端口(TriggerIn 激活请求)。"""
+        return self._trigger_fresh
+
     def receive(self, port: str, value: Any) -> None:
         """输入到达:一格缓冲,新值覆盖,标记新鲜。"""
         self._buffers[port] = value
         self._fresh.add(port)
+
+    def receive_trigger(self, port: str) -> None:
+        """激活请求到达(TriggerIn):标记触发事件,不存值。
+
+        数据线到达的载荷走 receive()(缓冲 + 新鲜);此处仅表达
+        "一次 activation 机会"——供信号线电平变化 / 数据线到达共用。
+        """
+        self._trigger_fresh.add(port)
+
+    def clear_triggers(self, ports) -> None:
+        """组触发后消费:丢弃指定端口触发事件(对数据端口是无害 no-op)。"""
+        for p in ports:
+            self._trigger_fresh.discard(p)
 
     def consume_inputs(self, ports, bound: set[str] | frozenset[str]) -> None:
         """触发后消费:新鲜标记清零;未绑定端口的缓冲清空(瞬态事件,拿走)。"""
@@ -124,10 +147,12 @@ class NodeImpl(ABC):
         """端口信号关闭 → 缓冲失效:丢弃值与新鲜标记(重开后等待新值)。
 
         与 consume_inputs(组触发后消费)不同:这是信号关闭的清理——关闭的
-        端口视为不存在,关闭期间到达或关闭前遗留的数据不参与任何后续计算。
+        端口视为不存在,关闭期间到达或关闭前遗留的数据不参与任何后续计算;
+        触发事件一并失效(激活请求随端口关闭作废,重开后等待新事件)。
         """
         self._fresh.discard(port)
         self._buffers.pop(port, None)
+        self._trigger_fresh.discard(port)
 
     def init(self, ctx: InitContext) -> dict[str, Any] | None:
         """__init__:实例创建时执行一次(初始化输入就绪后);返回初始状态增量。"""

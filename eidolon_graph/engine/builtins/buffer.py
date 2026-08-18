@@ -10,17 +10,19 @@
 
 from __future__ import annotations
 
-from ...model import DataIn, DataOut, ImplBinding, InputGroup, NodeType, StateField
+from ...model import (ON_TRIGGER, DataIn, DataOut, ImplBinding, InputGroup, NodeType,
+                      StateField, TriggerIn)
 from ..protocol import NodeImpl, TickContext, TickOutput
 
 BUFFER = NodeType(
     name="Buffer",
-    data_in=[DataIn("put"),
-             DataIn("flush", trigger=True)],  # 事件端口:触发输出并清空,载荷忽略
+    data_in=[DataIn("put")],
+    trigger_in=[TriggerIn("flush")],  # 激活入口:触发输出并清空,载荷忽略
     data_out=[DataOut("items")],
     state=[StateField("items", [])],
     groups=[InputGroup("put", inputs=["put"], outputs=[]),
-            InputGroup("flush", inputs=["flush"], outputs=["items"])],
+            InputGroup("flush", triggers=["flush"], outputs=["items"],
+                       policy=ON_TRIGGER)],
     impl=ImplBinding(kind="code", name="Buffer"),
 )
 

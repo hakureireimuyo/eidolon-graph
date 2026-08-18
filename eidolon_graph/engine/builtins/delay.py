@@ -11,16 +11,18 @@
 
 from __future__ import annotations
 
-from ...model import Annot, DataIn, DataOut, ImplBinding, InputGroup, NodeType, StateField
+from ...model import (ON_DATA_AND_TRIGGER, Annot, DataIn, DataOut, ImplBinding,
+                      InputGroup, NodeType, StateField, TriggerIn)
 from ..protocol import NodeImpl, TickContext, TickOutput
 
 DELAY = NodeType(
     name="Delay",
-    data_in=[DataIn("delay", type_annot=Annot(int)),
-             DataIn("trigger", trigger=True)],  # 事件端口:触发装填,载荷回显
+    data_in=[DataIn("delay", type_annot=Annot(int))],
+    trigger_in=[TriggerIn("trigger")],  # 激活入口:触发装填,载荷回显
     data_out=[DataOut("out")],
     state=[StateField("remaining", 0, Annot(int)), StateField("pending", None)],
-    groups=[InputGroup("arm", inputs=["delay", "trigger"], outputs=[])],
+    groups=[InputGroup("arm", inputs=["delay"], triggers=["trigger"], outputs=[],
+                       policy=ON_DATA_AND_TRIGGER)],
     auto=True,
     impl=ImplBinding(kind="code", name="Delay"),
 )

@@ -24,7 +24,8 @@ from dataclasses import dataclass, field
 from .assets import AssetLibrary
 from .graph import Graph, NodeInstance
 from .node import NodeType
-from .types import Wire
+from .types import (ON_ALL_DATA_READY, ON_ANY_DATA, ON_DATA_AND_TRIGGER, ON_TRIGGER,
+                    TRIGGER_POLICIES, Wire)
 
 
 @dataclass
@@ -121,9 +122,6 @@ def _validate_node(rep: ValidationReport, lib: AssetLibrary, ni: NodeInstance,
 
     # 数据输入:绑定互斥 / 引用存在性 / 裸端口(可选参数端口豁免——函数默认参数)
     for p in nt.data_in:
-        if p.trigger and (p.const_set or p.global_read is not None):
-            rep.error(f"节点 [{nid}] 触发端口 '{p.name}' 不能带绑定"
-                      f"(事件端口不是持久值:触发 = 新值到达,fresh 来自投递)")
         if p.const_set and p.global_read is not None:
             rep.error(f"节点 [{nid}] 数据输入 '{p.name}' 同时声明了常量与全局读取绑定(互斥)")
         if p.global_read is not None and p.global_read not in lib.globals_:
@@ -132,6 +130,14 @@ def _validate_node(rep: ValidationReport, lib: AssetLibrary, ni: NodeInstance,
         if not p.is_bound() and not wired and not p.optional:
             rep.error(f"节点 [{nid}] 数据输入 '{p.name}' 是裸端口:无连线、无默认、无引用"
                       f"(强迫显式;可显式声明默认 None 或可选参数)")
+
+    # 触发输入:名字全局唯一(与数据/控制输入互不重名);未连线合法(激活入口是可选来源)
+    seen_names = {p.name for p in nt.data_in} | {c.name for c in nt.control_in}
+    for t in nt.trigger_in:
+        if t.name in seen_names:
+            rep.error(f"节点 [{nid}] 触发输入 '{t.name}' 与数据/控制输入重名"
+                      f"(端口名全节点唯一)")
+        seen_names.add(t.name)
 
     # 数据输出:全局写入目标存在 / 同节点多输出同目标
     node_writes: dict[str, str] = {}
@@ -172,6 +178,8 @@ def _validate_groups(rep: ValidationReport, nid: str, nt: NodeType,
     seen_names: set[str] = set()
     in_port_group: dict[str, str] = {}
     out_port_group: dict[str, str] = {}
+    trigger_port_group: dict[str, str] = {}
+    trig_map = nt.trigger_in_map()
     for g in nt.groups:
         if g.name in seen_names:
             rep.error(f"节点 [{nid}] 输入组名 '{g.name}' 重复")
@@ -187,6 +195,26 @@ def _validate_groups(rep: ValidationReport, nid: str, nt: NodeType,
             if p in nt.init_in:
                 rep.error(f"节点 [{nid}] 数据输入 '{p}' 同时是初始化输入与输入组成员")
             in_port_group[p] = g.name
+        for t in g.triggers:
+            if t not in trig_map:
+                rep.error(f"节点 [{nid}] 输入组 '{g.name}' 引用了未声明的触发输入 '{t}'"
+                          f"(triggers 只能引用 TriggerIn 端口)")
+                continue
+            if t in trigger_port_group:
+                rep.error(f"节点 [{nid}] 触发输入 '{t}' 同时属于输入组 "
+                          f"'{trigger_port_group[t]}' 与 '{g.name}'(每组至多一个)")
+            trigger_port_group[t] = g.name
+        if g.policy not in TRIGGER_POLICIES:
+            rep.error(f"节点 [{nid}] 输入组 '{g.name}' 触发策略 '{g.policy}' 非法"
+                      f"(可选:{', '.join(TRIGGER_POLICIES)})")
+        # 互斥约束:策略与触发声明必须一致——死声明 / 死组都要显式拒绝
+        if g.triggers and g.policy in (ON_ALL_DATA_READY, ON_ANY_DATA):
+            rep.error(f"节点 [{nid}] 输入组 '{g.name}' 声明了触发输入但策略 "
+                      f"'{g.policy}' 不使用它(死声明:策略改为 on_trigger / "
+                      f"on_data_and_trigger,或移除 triggers)")
+        if not g.triggers and g.policy in (ON_TRIGGER, ON_DATA_AND_TRIGGER):
+            rep.error(f"节点 [{nid}] 输入组 '{g.name}' 策略 '{g.policy}' 需要触发输入"
+                      f"但未声明(死组:策略 'on_trigger' 永不触发)")
         for p in g.outputs:
             if p not in nt.data_out_map():
                 rep.error(f"节点 [{nid}] 输入组 '{g.name}' 引用了未声明的数据输出 '{p}'")
@@ -220,6 +248,9 @@ def _validate_subgraph_binding(rep: ValidationReport, lib: AssetLibrary, nid: st
         rep.error(f"节点 [{nid}] 子图类型 '{nt.name}' 声明了状态字段:子图节点状态全部位于内部世界(V1 约束)")
     if nt.config:
         rep.error(f"节点 [{nid}] 子图类型 '{nt.name}' 声明了配置字段:子图节点配置无法传递进内部世界(V1 约束)")
+    if nt.trigger_in:
+        rep.error(f"节点 [{nid}] 子图类型 '{nt.name}' 声明了触发输入:触发事件无法穿过"
+                  f"子图边界(V1 约束)——外部触发请经内部世界自驱或数据/信号线表达")
 
     pm = nt.impl.port_map
     port_names = (set(nt.data_in_map()) | set(nt.data_out_map())
@@ -288,39 +319,36 @@ def _validate_wires(rep: ValidationReport, lib: AssetLibrary, graph: Graph) -> N
         src_ctrl = w.src_port in snt.control_out_map()
         dst_data = w.dst_port in dnt.data_in_map()
         dst_ctrl = w.dst_port in dnt.control_in_map()
+        dst_trigger = w.dst_port in dnt.trigger_in_map()
         if not (src_data or src_ctrl):
             rep.error(f"连线源端口 '{w.src_node}.{w.src_port}' 不是输出端口")
             continue
-        if not (dst_data or dst_ctrl):
+        if not (dst_data or dst_ctrl or dst_trigger):
             rep.error(f"连线目标端口 '{w.dst_node}.{w.dst_port}' 不是输入端口")
-            continue
-        # 触发端口(事件端口)不接受信号线:信号屏蔽对事件无意义,触发只认数据到达
-        if w.dst_slot == "signal" and dst_data and dnt.data_in_map()[w.dst_port].trigger:
-            rep.error(f"触发端口 '{w.dst_node}.{w.dst_port}' 不接受信号线"
-                      f"(事件端口:触发只认数据到达,信号屏蔽无意义)")
             continue
         if src_data:
             if w.dst_slot == "signal":
                 # 数据输出的信号端口:电平由自动传导决定(实现永不写信号),但可
-                # 显式拉线到任何信号接收端(控制输入 / 数据输入的信号槽)——不改变
-                # 电平,只是显式路由;不拉线则沿数据线自动传导。
+                # 显式拉线到任何信号接收端(控制输入 / 触发输入 / 数据输入的
+                # 信号槽)——不改变电平,只是显式路由;不拉线则沿数据线自动传导。
                 continue
-            # 数据线(dst_slot='data')→ 数据输入
-            if not dst_data:
+            # 数据线(dst_slot='data')→ 数据输入(参数绑定)或触发输入(载荷 + 激活)
+            if not dst_data and not dst_trigger:
                 rep.error(f"交叉连线:数据输出 '{w.src_node}.{w.src_port}' 不能连控制输入 '{w.dst_node}.{w.dst_port}'")
                 continue
             src_annot = snt.data_out_map()[w.src_port].type_annot
-            dst_annot = dnt.data_in_map()[w.dst_port].type_annot
+            dst_annot = (dnt.data_in_map()[w.dst_port].type_annot if dst_data
+                         else dnt.trigger_in_map()[w.dst_port].type_annot)
             if not src_annot.compatible_with(dst_annot):
                 rep.error(f"连线类型不兼容:'{w.src_node}.{w.src_port}' 的类型不能流入 "
                           f"'{w.dst_node}.{w.dst_port}'")
         else:
-            # 控制输出 → 控制输入,或 → 数据端口信号(显式屏蔽)
+            # 控制输出 → 控制输入 / 触发输入(电平触发)/ 数据端口信号(显式屏蔽)
             if w.dst_slot != "signal":
                 rep.error(f"控制输出 '{w.src_node}.{w.src_port}' 只能连信号槽 "
                           f"(dst_slot='signal')")
                 continue
-            if dst_ctrl:
+            if dst_ctrl or dst_trigger:
                 continue
             # 数据端口信号:合法(跨通道信号连线)
             if not dst_data:
@@ -353,9 +381,12 @@ def _cycle_hints(rep: ValidationReport, lib: AssetLibrary, graph: Graph,
         if nt is None:
             continue
         has_source[ni.node_id] = nt.is_source()
-        wait[ni.node_id] = {p.name for p in nt.data_in
-                            if not p.is_bound() and p.name not in nt.init_in
-                            and (ni.node_id, p.name, "data") in in_edges}
+        wait[ni.node_id] = ({p.name for p in nt.data_in
+                             if not p.is_bound() and p.name not in nt.init_in
+                             and (ni.node_id, p.name, "data") in in_edges}
+                            | {t.name for t in nt.trigger_in
+                               if (ni.node_id, t.name, "data") in in_edges
+                               or (ni.node_id, t.name, "signal") in in_edges})
     for w in graph.wires:
         if w.dst_slot == "data":
             adj.setdefault(w.src_node, set()).add(w.dst_node)
@@ -368,7 +399,8 @@ def _cycle_hints(rep: ValidationReport, lib: AssetLibrary, graph: Graph,
         # 无源:环内没有任何源节点,也没有从环外喂入等待端口的边
         has_src = any(has_source.get(n, False) for n in scc)
         externally_fed = any(
-            any(w.src_node not in scc for w in [in_edges.get((n, p, "data"))] if w is not None)
+            any(w is not None and w.src_node not in scc
+                for w in (in_edges.get((n, p, "data")), in_edges.get((n, p, "signal"))))
             for n in scc
             for p in wait.get(n, set())
         )

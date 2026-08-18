@@ -26,8 +26,10 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from ..model import (ACTIVE, INACTIVE, AssetLibrary, Graph, NodeInstance, NodeType,
-                     ValidationError, ValidationReport, validate)
+from ..model import (ACTIVE, INACTIVE, ON_ALL_DATA_READY, ON_ANY_DATA,
+                     ON_DATA_AND_TRIGGER, ON_TRIGGER, AssetLibrary, Graph,
+                     NodeInstance, NodeType, ValidationError, ValidationReport,
+                     validate)
 from .protocol import InitContext, NodeImpl, ScheduleContext, TickContext, TickOutput
 from .registry import NodeRegistry
 from .rng import Rng, derive_seed
@@ -38,6 +40,7 @@ _MISSING = object()  # 端口无值哨兵(与"值为 None"区分)
 # 脏标记种类:影响节点求值语义的事件(与"值是否变化"无关)
 K_DATA = "data"        # 数据到达(到达即新鲜,覆盖旧值)
 K_CTRL = "ctrl"        # 控制电平变化
+K_TRIGGER = "trigger"  # TriggerIn 激活请求(信号线电平变化 → 触发事件)
 K_SIGNAL = "signal"    # 上游输出信号变化 / 子图边界强制关闭 → 推导失效
 K_SOURCE = "source"    # 自发型源节点播种(每轮 step)
 K_PULL = "pull"        # 拉取型源节点尾播种(读最新全局)
@@ -172,10 +175,12 @@ class World:
                                      for ni in graph.nodes}
         self.globals_: dict[str, Any] = {g.name: deepcopy(g.default)
                                          for g in lib.globals_.values()}
-        # 端口信号:输出信号为存储状态(轮次内按声明序重算);控制电平永远有定义
+        # 端口信号:输出信号为存储状态(轮次内按声明序重算);控制电平永远有定义;
+        # trigger_in_levels = 信号线触发输入的上一电平(变化检测,双沿都触发)
         self.output_signals: dict[tuple[str, str], str] = {}
         self.control_in_levels: dict[tuple[str, str], str] = {}
         self.control_out_levels: dict[tuple[str, str], str] = {}
+        self.trigger_in_levels: dict[tuple[str, str], str] = {}
         self.run_outputs: dict[tuple[str, str], Any] = {}   # 本次运行各输出端口的产出
         # 脏节点传播:投递即入队、出队即访问(持续字段,跨 run 边界排空——
         # resume 的冲刷投递发生在 run 之前)
@@ -230,6 +235,12 @@ class World:
                 self.control_out_levels[(ni.node_id, c.name)] = c.default_level
             for p in nt.data_out:
                 self.output_signals[(ni.node_id, p.name)] = ACTIVE
+            for t in nt.trigger_in:
+                # 信号线触发输入:电平记录按当前推导初始化(防首次投递与默认电平
+                # 相同也被误判为"变化"——与快照恢复/编辑迁移的重推导一致)
+                if (ni.node_id, t.name, "signal") in self.compiled.in_edge:
+                    self.trigger_in_levels[(ni.node_id, t.name)] = \
+                        self._input_signal(ni.node_id, t.name)
             self._resolved_config[ni.node_id] = self._resolve_config(ni.node_id, nt)
 
     def _build_inner(self, ni: NodeInstance, nt: NodeType, stack: tuple[str, ...]) -> "World":
@@ -348,16 +359,24 @@ class World:
                 self._receive(dn, dp, value, src=nid, src_port=p)
         for (nid, c), lvl in self._pending_ctrl.items():
             for (dn, dp, _dslot) in self.compiled.out_edges.get((nid, c, "signal"), []):
-                if dp in self.compiled.types[dn].control_in_map():
+                dnt = self.compiled.types[dn]
+                if dp in dnt.control_in_map():
                     self._set_ctrl(dn, dp, lvl, src=nid, src_port=c)
+                elif dp in dnt.trigger_in_map():
+                    self._trigger_deliver(dn, dp, lvl, src=nid, src_port=c)
                 else:
                     # 信号槽目标(数据端口):暂停期未唤醒,恢复时补唤醒(重算幂等,
                     # 只有电平真变化才会继续级联)
                     self._invalidate(dn, dp, src=nid, src_port=c)
         for (nid, p), lvl in self._pending_signal.items():
             for (dn, dp, dslot) in self.compiled.out_edges.get((nid, p, "data"), []):
-                if dslot == "signal" and dp in self.compiled.types[dn].control_in_map():
+                if dslot != "signal":
+                    continue
+                dnt = self.compiled.types[dn]
+                if dp in dnt.control_in_map():
                     self._set_ctrl(dn, dp, lvl, src=nid, src_port=p)
+                elif dp in dnt.trigger_in_map():
+                    self._trigger_deliver(dn, dp, lvl, src=nid, src_port=p)
         for name, value in self._pending_global.items():
             self.globals_[name] = value
         self._pending_data.clear()
@@ -430,7 +449,11 @@ class World:
         if ev.kind == "data":
             self._receive(ev.node, ev.port, ev.value, front=False)
         else:
-            self._set_ctrl(ev.node, ev.port, ev.value, front=False)
+            nt = self.compiled.types[ev.node]
+            if ev.port in nt.trigger_in_map():
+                self._trigger_deliver(ev.node, ev.port, ev.value, front=False)
+            else:
+                self._set_ctrl(ev.node, ev.port, ev.value, front=False)
 
     # ------------------------------------------------------------------
     # 脏节点传播:投递 = 变更,统一经助手标记原因并入队唤醒下游
@@ -477,7 +500,17 @@ class World:
 
         端口信号关闭 → 数据视为不存在:直接丢弃不唤醒(缓冲失效——关闭
         期间到达的数据不参与计算,重开后等待新值)。
+
+        TriggerIn 例外:激活请求不依赖"带电"——数据线到达 = 载荷 + 激活
+        请求(receive_trigger),不被信号关闭拦截(信号线是其激活源)。
         """
+        if port in self.compiled.types[nid].trigger_in_map():
+            self._impls[nid].receive(port, value)
+            self._impls[nid].receive_trigger(port)
+            self._note(Mark(kind=K_DATA, port=port, src=src, src_port=src_port,
+                            src_slot="data"), nid)
+            self._enqueue(nid, front=front)
+            return
         if self._input_signal(nid, port) == INACTIVE:
             return
         self._impls[nid].receive(port, value)
@@ -499,6 +532,18 @@ class World:
         self.control_in_levels[(nid, port)] = lvl
         self._note(Mark(kind=K_CTRL, port=port, src=src, src_port=src_port,
                         src_slot="ctrl"), nid)
+        self._enqueue(nid, front=front)
+
+    def _trigger_deliver(self, nid: str, port: str, lvl: str, *, src: str | None = None,
+                         src_port: str | None = None, front: bool = True) -> None:
+        """信号线 → TriggerIn:电平变化 = 一次激活请求(双沿都触发,与 _set_ctrl
+        的"变化即事件"语义一致);电平保持不重复触发。"""
+        if self.trigger_in_levels.get((nid, port)) == lvl:
+            return
+        self.trigger_in_levels[(nid, port)] = lvl
+        self._impls[nid].receive_trigger(port)
+        self._note(Mark(kind=K_TRIGGER, port=port, src=src, src_port=src_port,
+                        src_slot="signal"), nid)
         self._enqueue(nid, front=front)
 
     def _invalidate(self, nid: str, port: str, *, src: str | None = None,
@@ -557,7 +602,10 @@ class World:
             self._fire(nid, nt, st, group="step", ports=())
         # 4) 输入组 = 函数调用:端口 = 参数(连线参数参与触发,绑定端口仅作值源,
         #    可选参数不接线/被信号禁用 → 回退配置默认,不阻塞触发);
-        #    每组每轮至多一次——数据齐全即触发,反馈环跨轮迭代
+        #    触发 = 组策略判定(ON_* 常量):默认 ON_ALL_DATA_READY = 全部有效
+        #    连线输入有新值(现状行为);ON_TRIGGER / ON_DATA_AND_TRIGGER 需要
+        #    TriggerIn 激活事件(数据线到达或信号线电平变化);触发事件与 fresh
+        #    一样等待(未触发保留、触发后消费)。每组每轮至多一次——反馈环跨轮迭代
         for g in nt.groups:
             if g.name in turn.fired_groups:
                 continue
@@ -570,10 +618,29 @@ class World:
             if wired and all(self._input_signal(nid, p) == INACTIVE for p in wired) \
                     and required_closed:
                 continue  # 必需参数被关闭 → 组不执行(输出信号按传导关闭)
-            trigger = [p for p in wired if self._input_signal(nid, p) == ACTIVE]
-            if all(p in self._impls[nid].fresh for p in trigger):
+            active_data = [p for p in wired if self._input_signal(nid, p) == ACTIVE]
+            impl = self._impls[nid]
+            events = [t for t in g.triggers if t in impl.trigger_fresh]
+            if g.policy == ON_ANY_DATA:
+                ready = any(p in impl.fresh for p in active_data)
+            elif g.policy == ON_TRIGGER:
+                ready = bool(events)
+            elif g.policy == ON_DATA_AND_TRIGGER:
+                ready = all(p in impl.fresh for p in active_data) and bool(events)
+            else:  # ON_ALL_DATA_READY(默认,现状行为)
+                ready = all(p in impl.fresh for p in active_data)
+            if ready:
                 turn.fired_groups.add(g.name)
-                self._fire(nid, nt, st, group=g.name, ports=tuple(g.inputs))
+                # 门控翻转轮:输出信号仍为门控期旧值(INACTIVE),组触发投递会被
+                # 下游目标端旧信号拦截——先重算再投递。仅在信号与当前状态不一致
+                # 时调用(常规轮零开销、不消耗 signal_runs 预算;不依赖历史状态,
+                # 快照恢复/编辑后同样正确)
+                if self._enabled(nid) and not st.circuit_open and any(
+                        self.output_signals.get((nid, p)) == INACTIVE
+                        for g in nt.groups for p in g.outputs):
+                    self._signals(nid)
+                self._fire(nid, nt, st, group=g.name,
+                           ports=tuple(g.inputs) + tuple(g.triggers))
                 # 源节点的组触发可能改变发射状态(如 Delay 装填、Pulse 调制速率):
                 # 按最新状态重查调度——实时模式下装填的倒计时不被睡眠
                 if nt.is_source():
@@ -685,9 +752,12 @@ class World:
         merged.update(out.state)
         st.state = merged
         # 组输入消费:触发后重新等待全套新值(缓冲清空语义在节点基类——
-        # 连线输入是瞬态事件被拿走,绑定端口是持久输入不消费)
+        # 连线输入是瞬态事件被拿走,绑定端口是持久输入不消费;
+        # TriggerIn 永不绑定,载荷与触发事件一并清空)
         self._impls[nid].consume_inputs(
-            ports, {p for p in ports if nt.data_in_map()[p].is_bound()})
+            ports, {p for p in ports
+                    if p in nt.data_in_map() and nt.data_in_map()[p].is_bound()})
+        self._impls[nid].clear_triggers(ports)
         # 数据输出:记录本轮产出 + 沿连线投递 + 全局写入
         # (信号线目标不投递数据值——下游输入信号按需推导 / 电平存储)
         for p, value in out.data_out.items():
@@ -705,9 +775,10 @@ class World:
             if decl.global_write is not None:
                 self.globals_[decl.global_write] = value
         # 控制输出(仅信号节点):显式写电平,未写保持;沿信号线投递到下游控制输入
-        # (连到数据端口信号的线不投递电平——下游输入信号按需从 control_out_levels
-        # 推导;但电平变化必须唤醒下游,关闭传播(熄火)不能依赖下游恰好被其他事件
-        # 访问——数据投递对关闭端口直接丢弃,不会再顺带唤醒)
+        # / 触发输入(电平变化 = 激活请求);连到数据端口信号的线不投递电平——
+        # 下游输入信号按需从 control_out_levels 推导;但电平变化必须唤醒下游,
+        # 关闭传播(熄火)不能依赖下游恰好被其他事件访问——数据投递对关闭端口
+        # 直接丢弃,不会再顺带唤醒)
         for c, lvl in out.control_out.items():
             old = self.control_out_levels.get((nid, c))
             self.control_out_levels[(nid, c)] = lvl
@@ -715,8 +786,11 @@ class World:
                 self._pending_ctrl[(nid, c)] = lvl
                 continue
             for (dn, dp, _dslot) in self.compiled.out_edges.get((nid, c, "signal"), []):
-                if dp in self.compiled.types[dn].control_in_map():
+                dnt = self.compiled.types[dn]
+                if dp in dnt.control_in_map():
                     self._set_ctrl(dn, dp, lvl, src=nid, src_port=c)
+                elif dp in dnt.trigger_in_map():
+                    self._trigger_deliver(dn, dp, lvl, src=nid, src_port=c)
                 elif lvl != old:
                     self._invalidate(dn, dp, src=nid, src_port=c)
 
@@ -784,6 +858,9 @@ class World:
                for p in nt.data_out}
         gated = (not self._enabled(nid)) or st.circuit_open
         for g in nt.groups:
+            # 输出信号传导只看数据参数(组能否产出由数据决定);TriggerIn 是激活
+            # 请求,不带"带电"维度——信号线电平变化触发的当轮,输出不因触发入口
+            # 电平被断电(与旧模型 trigger 端口信号恒 active 行为一致)
             all_closed = bool(g.inputs) and all(
                 self._input_signal(nid, p) == INACTIVE for p in g.inputs)
             lvl = INACTIVE if (gated or all_closed) else ACTIVE
@@ -806,12 +883,18 @@ class World:
             if lvl == old.get(p.name):
                 continue  # 电平未变:下游推导结果不变,无需唤醒
             for (dn, dp, dslot) in self.compiled.out_edges.get((nid, p.name, "data"), []):
-                if dslot == "signal" and dp in self.compiled.types[dn].control_in_map():
+                dnt = self.compiled.types[dn]
+                if dslot == "signal" and (dp in dnt.control_in_map()
+                                          or dp in dnt.trigger_in_map()):
                     if self._paused:  # 传播闸门:电平挂起
                         self._pending_signal[(nid, p.name)] = lvl
-                    else:
+                    elif dp in dnt.control_in_map():
                         self._set_ctrl(dn, dp, lvl, src=nid, src_port=p.name)  # 插队:门控即时结算
+                    else:
+                        self._trigger_deliver(dn, dp, lvl, src=nid, src_port=p.name)
                 else:
+                    # 其余目标(数据槽 / 信号槽数据输入 / 数据线目标):唤醒重推导——
+                    # 输入信号按需从本表推导,上游变化必须显式通知下游
                     self._invalidate(dn, dp, src=nid, src_port=p.name)  # 队尾:惰性传播
 
     # ------------------------------------------------------------------
@@ -819,11 +902,17 @@ class World:
     # ------------------------------------------------------------------
 
     def _resolve_port(self, nid: str, port: str) -> Any:
-        """端口值解析:缓冲(节点基类)→ 常量 → 全局读取 → MISSING。"""
+        """端口值解析:缓冲(节点基类)→ 常量 → 全局读取 → MISSING。
+
+        TriggerIn 无绑定:缓冲有值(数据线载荷)已在上一步返回,无值即缺
+        (信号线-only 触发不产生载荷,ctx.data_in 中无该键)。"""
         impl = self._impls[nid]
         if port in impl.buffers:
             return impl.buffers[port]
-        p = self.compiled.types[nid].data_in_map()[port]
+        nt = self.compiled.types[nid]
+        if port in nt.trigger_in_map():
+            return _MISSING
+        p = nt.data_in_map()[port]
         if p.const_set:
             return deepcopy(p.const)
         if p.global_read is not None:

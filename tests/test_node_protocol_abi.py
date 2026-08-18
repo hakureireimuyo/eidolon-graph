@@ -14,9 +14,10 @@
 from eidolon_graph.engine import Event, NodeRegistry, World
 from eidolon_graph.engine.builtins import register_builtins
 from eidolon_graph.engine.protocol import NodeImpl, TickContext, TickOutput
-from eidolon_graph.model import (Annot, AssetLibrary, ControlOut, DataIn, DataOut,
-                                 Graph, ImplBinding, InputGroup, NodeInstance,
-                                 NodeType, StateField, Wire, serialize)
+from eidolon_graph.model import (ON_TRIGGER, Annot, AssetLibrary, ControlOut, DataIn,
+                                 DataOut, Graph, ImplBinding, InputGroup,
+                                 NodeInstance, NodeType, StateField, TriggerIn, Wire,
+                                 serialize)
 from eidolon_graph.engine.signal import ACTIVE, INACTIVE
 
 # ---------------------------------------------------------------------------
@@ -192,3 +193,46 @@ def test_async_orphan_completion_ignored_by_impl():
     w.run([Event("ask", "_result", "孤儿")])
     assert w._states["printer"].state["last_msg"] is None
     assert w._states["ask"].state["calls"] == 0
+
+
+# ---------------------------------------------------------------------------
+# §2/§3 触发端口协议面:TriggerIn + 组触发策略(1.0)
+# ---------------------------------------------------------------------------
+
+TRIG_GATE = NodeType(
+    name="TrigGate",
+    trigger_in=[TriggerIn("go")],          # 触发入口:数据线(载荷)或信号线(电平)
+    data_out=[DataOut("out")],
+    groups=[InputGroup("g", triggers=["go"], outputs=["out"], policy=ON_TRIGGER)],
+    impl=ImplBinding(kind="code", name="TrigGate"),
+)
+
+
+class TrigGateImpl(NodeImpl):
+    """外部节点包:仅触发入口激活时产出(载荷回显)。"""
+
+    def tick(self, ctx: TickContext) -> TickOutput:
+        return TickOutput(data_out={"out": ctx.data_in.get("go")})
+
+
+def test_trigger_port_protocol_roundtrip():
+    """协议锁定:TriggerIn 声明与组策略必须随协议序列化往返。"""
+    d = serialize.node_type_to_dict(TRIG_GATE)
+    nt = serialize.node_type_from_dict(d)
+    assert [t.name for t in nt.trigger_in] == ["go"]
+    assert nt.groups[0].triggers == ["go"]
+    assert nt.groups[0].policy == ON_TRIGGER
+
+
+def test_trigger_port_fires_on_injected_payload():
+    """协议锁定:宿主注入 TriggerIn 数据 → 激活(载荷进 data_in)。"""
+    lib, registry, _ = make_world()
+    lib.add_node_type(TRIG_GATE)
+    registry.register("TrigGate", TrigGateImpl)
+    g = Graph(name="tg", nodes=[
+        NodeInstance("tg", "TrigGate"),
+        NodeInstance("printer", "Printer"),
+    ], wires=[Wire("tg", "out", "printer", "msg")])
+    w = World(lib, g, registry)
+    w.run([Event("tg", "go", "你好")])
+    assert w._states["printer"].state["last_msg"] == "你好"

@@ -13,13 +13,14 @@ from __future__ import annotations
 
 from ...engine.protocol import NodeImpl, TickContext, TickOutput
 from ...engine.signal import ACTIVE, INACTIVE
-from ...model import (Annot, ConfigField, ControlOut, DataIn, DataOut,
-                                 ImplBinding, InputGroup, NodeType, StateField)
+from ...model import (ON_TRIGGER, Annot, ConfigField, ControlOut, DataIn, DataOut,
+                      ImplBinding, InputGroup, NodeType, StateField, TriggerIn)
 
 LLM_CALL = NodeType(
     name="LlmCall",
-    # 完成端口 = 可选参数 + 事件端口:注入即触发,空触发保持等待(协议 §4)
-    data_in=[DataIn("prompt"), DataIn("_result", optional=True, trigger=True)],
+    # 完成端口 = TriggerIn 激活入口:仅真实注入触发,载荷携带 value/error
+    data_in=[DataIn("prompt")],
+    trigger_in=[TriggerIn("_result")],
     data_out=[DataOut("response")],
     control_out=[ControlOut("failed", default_level=INACTIVE)],
     config=[ConfigField("model", ""),
@@ -31,7 +32,8 @@ LLM_CALL = NodeType(
            StateField("last_error", None), StateField("calls", 0, Annot(int))],
     groups=[
         InputGroup("call", inputs=["prompt"], outputs=[]),            # 发起调用
-        InputGroup("complete", inputs=["_result"], outputs=["response"]),  # 完成注入
+        InputGroup("complete", triggers=["_result"], outputs=["response"],
+                   policy=ON_TRIGGER),  # 完成注入:仅真实注入触发(不再有空触发)
     ],
     impl=ImplBinding(kind="code", name="LlmCall"),
 )
@@ -59,8 +61,8 @@ class LlmCallImpl(NodeImpl):
             return TickOutput(state={"pending": pending, "calls": seq,
                                      "last_error": None})
         # complete:外部结果到达(桥注入 {"value": ...} 或 {"error": ...})。
-        # 完成端口是可选参数 → 组在每次节点访问都被"空触发"(wired 为空,
-        # 触发条件真空为真,协议 §4 约定):结果缺失必须保持等待、不清 pending。
+        # ON_TRIGGER 策略:仅 _result 注入才触发本组——不再有空触发;
+        # 结果缺失必须保持等待、不清 pending。
         pending = ctx.state.get("pending")
         if pending is None:
             return TickOutput()  # 无 pending:忽略(生命周期策略是节点包业务)

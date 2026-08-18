@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from .types import (ConfigField, ControlIn, ControlOut, DataIn, DataOut, InputGroup,
-                    StateField)
+                    StateField, TriggerIn)
 
 
 @dataclass
@@ -35,6 +35,7 @@ class NodeType:
     name: str
     data_in: list[DataIn] = field(default_factory=list)
     data_out: list[DataOut] = field(default_factory=list)
+    trigger_in: list[TriggerIn] = field(default_factory=list)  # 函数调用级触发入口
     control_in: list[ControlIn] = field(default_factory=list)
     control_out: list[ControlOut] = field(default_factory=list)
     state: list[StateField] = field(default_factory=list)  # 保序(初始快照字段序)
@@ -47,6 +48,9 @@ class NodeType:
     # -- 声明查询(端口/字段名 → 声明) --
     def data_in_map(self) -> dict[str, DataIn]:
         return {p.name: p for p in self.data_in}
+
+    def trigger_in_map(self) -> dict[str, TriggerIn]:
+        return {p.name: p for p in self.trigger_in}
 
     def data_out_map(self) -> dict[str, DataOut]:
         return {p.name: p for p in self.data_out}

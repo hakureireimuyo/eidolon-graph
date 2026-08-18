@@ -14,8 +14,9 @@ from typing import Any
 from .assets import (AssetLibrary, ConstAsset, GenericAsset, GlobalVar, ServiceAsset)
 from .graph import Graph, NodeInstance
 from .node import ImplBinding, NodeType
-from .types import (TYPE_NOT_SET, Annot, ConfigField, ControlIn, ControlOut, DataIn,
-                    DataOut, InputGroup, StateField, Wire)
+from .types import (TYPE_NOT_SET, ON_ALL_DATA_READY, Annot, ConfigField, ControlIn,
+                    ControlOut, DataIn, DataOut, InputGroup, StateField, TriggerIn,
+                    Wire)
 from .version import KERNEL_VERSION, compatible
 
 
@@ -49,15 +50,17 @@ def annot_from_dict(v: Any) -> Annot:
 def data_in_to_dict(p: DataIn) -> dict:
     return {"name": p.name, "type": annot_to_dict(p.type_annot),
             "const_set": p.const_set, "const": p.const,
-            "global_read": p.global_read, "optional": p.optional,
-            "trigger": p.trigger}
+            "global_read": p.global_read, "optional": p.optional}
 
 
 def data_in_from_dict(d: dict) -> DataIn:
+    if d.get("trigger"):  # 1.0 拒绝旧资产:触发语义由 TriggerIn 端口 + 组策略表达
+        raise SerializationError(
+            f"数据输入 '{d.get('name')}' 使用已废弃的 trigger 标记(1.0 移除):"
+            f"触发语义由独立 TriggerIn 端口与组触发策略表达,旧资产请重建")
     return DataIn(name=d["name"], type_annot=annot_from_dict(d.get("type")),
                   const_set=d.get("const_set", False), const=d.get("const"),
-                  global_read=d.get("global_read"), optional=d.get("optional", False),
-                  trigger=d.get("trigger", False))
+                  global_read=d.get("global_read"), optional=d.get("optional", False))
 
 
 def data_out_to_dict(p: DataOut) -> dict:
@@ -79,12 +82,23 @@ def control_in_from_dict(d: dict) -> ControlIn:
 
 
 def input_group_to_dict(g: InputGroup) -> dict:
-    return {"name": g.name, "inputs": list(g.inputs), "outputs": list(g.outputs)}
+    return {"name": g.name, "inputs": list(g.inputs), "outputs": list(g.outputs),
+            "triggers": list(g.triggers), "policy": g.policy}
 
 
 def input_group_from_dict(d: dict) -> InputGroup:
     return InputGroup(name=d["name"], inputs=list(d.get("inputs", [])),
-                      outputs=list(d.get("outputs", [])))
+                      outputs=list(d.get("outputs", [])),
+                      triggers=list(d.get("triggers", [])),
+                      policy=d.get("policy", ON_ALL_DATA_READY))
+
+
+def trigger_in_to_dict(t: TriggerIn) -> dict:
+    return {"name": t.name, "type": annot_to_dict(t.type_annot)}
+
+
+def trigger_in_from_dict(d: dict) -> TriggerIn:
+    return TriggerIn(name=d["name"], type_annot=annot_from_dict(d.get("type")))
 
 
 def control_out_to_dict(c: ControlOut) -> dict:
@@ -148,6 +162,7 @@ def node_type_to_dict(nt: NodeType) -> dict:
     return {"name": nt.name,
             "data_in": [data_in_to_dict(p) for p in nt.data_in],
             "data_out": [data_out_to_dict(p) for p in nt.data_out],
+            "trigger_in": [trigger_in_to_dict(t) for t in nt.trigger_in],
             "control_in": [control_in_to_dict(c) for c in nt.control_in],
             "control_out": [control_out_to_dict(c) for c in nt.control_out],
             "state": [state_field_to_dict(f) for f in nt.state],
@@ -162,6 +177,7 @@ def node_type_from_dict(d: dict) -> NodeType:
     return NodeType(name=d["name"],
                     data_in=[data_in_from_dict(x) for x in d.get("data_in", [])],
                     data_out=[data_out_from_dict(x) for x in d.get("data_out", [])],
+                    trigger_in=[trigger_in_from_dict(x) for x in d.get("trigger_in", [])],
                     control_in=[control_in_from_dict(x) for x in d.get("control_in", [])],
                     control_out=[control_out_from_dict(x) for x in d.get("control_out", [])],
                     state=[state_field_from_dict(x) for x in d.get("state", [])],
@@ -217,6 +233,11 @@ def library_to_dict(lib: AssetLibrary) -> dict:
 
 
 def library_from_dict(d: dict) -> AssetLibrary:
+    recorded = d.get("kernel_version", "0")
+    if not compatible(recorded, KERNEL_VERSION):
+        raise SerializationError(
+            f"资产库记录的内核版本 '{recorded}' 与当前版本 '{KERNEL_VERSION}' "
+            f"主版本不兼容,拒绝加载(旧 0.x 资产请在 1.0 内核下重建)")
     lib = AssetLibrary()
     for x in d.get("globals", []):
         if "default" not in x:

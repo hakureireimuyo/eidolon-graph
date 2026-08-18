@@ -374,10 +374,10 @@ Native 节点、Python 脚本节点、LLM 节点共享同一套执行语义—�
 | Trigger 仍可作为数据端口的特殊声明 | 独立出 Trigger Port(函数调用级);数据端口的 `trigger=True` 标记让位于端口类型与节点策略 |
 | "数据到达 → 触发"写在 Data Port 上 | 移到节点层:Node Trigger Policy 决定参数变化如何转化为执行请求 |
 
-## 9. 落地建议(待实施,本文档不包含实现)
+## 9. 落地建议(实施状态)
 
-1. **端口模型**:独立 Trigger Port 类型(函数调用级),替代 `DataIn.trigger=True` 标记;明确连接规则(§2.3)与校验;
-2. **触发策略**:节点默认策略(保留现状 ON_ALL_REQUIRED_DATA / ON_ANY_DATA 行为),显式策略供长任务节点使用;策略可编程(挂载用户脚本);
-3. **一等语义**:Trigger 生命周期、Trigger Context、因果链数据输出(供编辑器/调试器消费);
-4. **节点接口**:标准 Node API(parameters / triggers / state / execute(context)),脚本只能通过 `context.emit_trigger()` 产生新触发,不得绕过调度器;
-5. **语义审计**:按 §7 检查表逐项审查现有 `Node / Port / Signal / Data / Connection / Buffer / State / Execution / Scheduler` 实现——已完成,见 [语义职责审计:内核实现现状逐项审查](./graph-semantic-audit.md)(结论:边界 1 触发语义是实际修正落点,边界 2/3/5/6 已分离良好,边界 7 为有意识的反向决策)。
+1. **端口模型**:**已实现(1.0.0-0)**——独立 TriggerIn 端口(函数调用级)替代 `DataIn.trigger=True` 标记;连接规则(§2.3:数据线/信号线 → TriggerIn 均合法)与校验落地;旧 0.x 资产(含 trigger 标记)直接拒绝加载;
+2. **触发策略**:**已实现(1.0.0-0)**——组级策略 `InputGroup.policy`(ON_ALL_DATA_READY 默认保现状 / ON_ANY_DATA / ON_TRIGGER / ON_DATA_AND_TRIGGER);策略可编程(挂载用户脚本)待脚本系统;
+3. **一等语义**:Trigger 生命周期、Trigger Context、因果链数据输出(供编辑器/调试器消费)——待实施(trace 已有访问粒度因果时间线,见 [语义职责审计](./graph-semantic-audit.md) 边界 6);
+4. **节点接口**:标准 Node API(parameters / triggers / state / execute(context)),脚本只能通过 `context.emit_trigger()` 产生新触发,不得绕过调度器——待脚本系统落地;
+5. **语义审计**:**已完成**,见 [语义职责审计:内核实现现状逐项审查](./graph-semantic-audit.md)(结论:边界 1 触发语义是实际修正落点,边界 2/3/5/6 已分离良好,边界 7 为有意识的反向决策)。
