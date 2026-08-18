@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from ...model import ControlIn, ControlOut, DataIn, DataOut, ImplBinding, InputGroup, NodeType
+from ...model import CATEGORY_DATA, ControlIn, ControlOut, DataIn, DataOut, ImplBinding, InputGroup, NodeType
 from ..protocol import NodeImpl, TickContext, TickOutput
 from ..signal import ACTIVE, INACTIVE
 
 SWITCH = NodeType(
     name="Switch",
+    category=CATEGORY_DATA,
     data_in=[DataIn("value")],
     data_out=[DataOut("selected")],
     control_in=[ControlIn("enable")],

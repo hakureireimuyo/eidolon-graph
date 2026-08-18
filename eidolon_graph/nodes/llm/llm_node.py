@@ -13,11 +13,14 @@ from __future__ import annotations
 
 from ...engine.protocol import NodeImpl, TickContext, TickOutput
 from ...engine.signal import ACTIVE, INACTIVE
-from ...model import (ON_TRIGGER, Annot, ConfigField, ControlOut, DataIn, DataOut,
+from ...model import (
+    CATEGORY_ENCAP,
+    ON_TRIGGER, Annot, ConfigField, ControlOut, DataIn, DataOut,
                       ImplBinding, InputGroup, NodeType, StateField, TriggerIn)
 
 LLM_CALL = NodeType(
     name="LlmCall",
+    category=CATEGORY_ENCAP,
     # 完成端口 = TriggerIn 激活入口:仅真实注入触发,载荷携带 value/error
     data_in=[DataIn("prompt")],
     trigger_in=[TriggerIn("_result")],

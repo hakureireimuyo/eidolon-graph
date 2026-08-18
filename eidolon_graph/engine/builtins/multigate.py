@@ -8,11 +8,12 @@
 
 from __future__ import annotations
 
-from ...model import DataIn, DataOut, ImplBinding, InputGroup, NodeType
+from ...model import CATEGORY_DATA, DataIn, DataOut, ImplBinding, InputGroup, NodeType
 from ..protocol import NodeImpl, TickContext, TickOutput
 
 MULTIGATE = NodeType(
     name="MultiGate",
+    category=CATEGORY_DATA,
     data_in=[DataIn("int_a"), DataIn("int_b"), DataIn("int_c")],
     data_out=[DataOut("out_p"), DataOut("out_q")],
     groups=[InputGroup("g1", inputs=["int_a", "int_b"], outputs=["out_p"]),

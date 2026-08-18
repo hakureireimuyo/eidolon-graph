@@ -9,13 +9,16 @@
 
 from __future__ import annotations
 
-from ...model import (Annot, ControlIn, ControlOut, DataIn, DataOut, ImplBinding,
+from ...model import (
+    CATEGORY_SOURCE,
+    Annot, ControlIn, ControlOut, DataIn, DataOut, ImplBinding,
                       InputGroup, NodeType, StateField)
 from ..protocol import NodeImpl, TickContext, TickOutput
 from ..signal import ACTIVE, INACTIVE
 
 CLOCK = NodeType(
     name="Clock",
+    category=CATEGORY_SOURCE,
     data_in=[DataIn("rate", type_annot=Annot(int), const_set=True, const=1)],
     data_out=[DataOut("count", type_annot=Annot(int))],
     control_in=[ControlIn("enable")],

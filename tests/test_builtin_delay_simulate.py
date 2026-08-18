@@ -19,9 +19,12 @@ from eidolon_graph.engine import (Event, NodeImpl, NodeRegistry, ScheduleContext
                                   SetConfig, TickContext, TickOutput, World)
 from eidolon_graph.engine.builtins import register_builtins
 from eidolon_graph.engine.signal import ACTIVE, INACTIVE
-from eidolon_graph.model import (Annot, AssetLibrary, ConfigField, DataIn, DataOut,
-                                 Graph, ImplBinding, InputGroup, NodeInstance,
-                                 NodeType, ServiceAsset, Wire)
+from eidolon_graph.model import (
+    CATEGORY_CUSTOM,
+    Annot, AssetLibrary, ConfigField, DataIn, DataOut,
+    Graph, ImplBinding, InputGroup, NodeInstance,
+    NodeType, ServiceAsset, Wire
+)
 
 
 def make_env():
@@ -237,6 +240,7 @@ class FakeConn:
 
 DB_QUERY = NodeType(
     name="DbQuery",
+    category=CATEGORY_CUSTOM,
     data_in=[DataIn("ask")],
     data_out=[DataOut("answer")],
     config=[ConfigField("db", "memory_db", asset_ref="service")],

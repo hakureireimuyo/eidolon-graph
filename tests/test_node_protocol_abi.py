@@ -14,10 +14,13 @@
 from eidolon_graph.engine import Event, NodeRegistry, World
 from eidolon_graph.engine.builtins import register_builtins
 from eidolon_graph.engine.protocol import NodeImpl, TickContext, TickOutput
-from eidolon_graph.model import (ON_TRIGGER, Annot, AssetLibrary, ControlOut, DataIn,
-                                 DataOut, Graph, ImplBinding, InputGroup,
-                                 NodeInstance, NodeType, StateField, TriggerIn, Wire,
-                                 serialize)
+from eidolon_graph.model import (
+    CATEGORY_CUSTOM,
+    ON_TRIGGER, Annot, AssetLibrary, ControlOut, DataIn,
+    DataOut, Graph, ImplBinding, InputGroup,
+    NodeInstance, NodeType, StateField, TriggerIn, Wire,
+    serialize
+)
 from eidolon_graph.engine.signal import ACTIVE, INACTIVE
 
 # ---------------------------------------------------------------------------
@@ -26,6 +29,7 @@ from eidolon_graph.engine.signal import ACTIVE, INACTIVE
 
 ASK_LLM = NodeType(
     name="AskLLM",
+    category=CATEGORY_CUSTOM,
     data_in=[DataIn("prompt"), DataIn("_result", optional=True)],  # 完成端口 = 可选参数
     data_out=[DataOut("response")],
     control_out=[ControlOut("answered", default_level=INACTIVE)],
@@ -201,6 +205,7 @@ def test_async_orphan_completion_ignored_by_impl():
 
 TRIG_GATE = NodeType(
     name="TrigGate",
+    category=CATEGORY_CUSTOM,
     trigger_in=[TriggerIn("go")],          # 触发入口:数据线(载荷)或信号线(电平)
     data_out=[DataOut("out")],
     groups=[InputGroup("g", triggers=["go"], outputs=["out"], policy=ON_TRIGGER)],

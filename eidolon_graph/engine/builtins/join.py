@@ -7,11 +7,12 @@
 
 from __future__ import annotations
 
-from ...model import DataIn, DataOut, ImplBinding, InputGroup, NodeType
+from ...model import CATEGORY_DATA, DataIn, DataOut, ImplBinding, InputGroup, NodeType
 from ..protocol import NodeImpl, TickContext, TickOutput
 
 JOIN = NodeType(
     name="Join",
+    category=CATEGORY_DATA,
     data_in=[DataIn("a"), DataIn("b")],
     data_out=[DataOut("out")],
     groups=[InputGroup("join", inputs=["a", "b"], outputs=["out"])],

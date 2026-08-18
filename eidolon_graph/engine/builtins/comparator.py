@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from ...model import ControlOut, DataIn, DataOut, ImplBinding, InputGroup, NodeType
+from ...model import CATEGORY_DATA, ControlOut, DataIn, DataOut, ImplBinding, InputGroup, NodeType
 from ..protocol import NodeImpl, TickContext, TickOutput
 from ..signal import ACTIVE, INACTIVE
 
 COMPARATOR = NodeType(
     name="Comparator",
+    category=CATEGORY_DATA,
     data_in=[DataIn("a"), DataIn("b")],
     data_out=[DataOut("gt"), DataOut("eq")],
     control_out=[ControlOut("a_gt_b")],

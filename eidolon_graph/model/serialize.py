@@ -14,9 +14,9 @@ from typing import Any
 from .assets import (AssetLibrary, ConstAsset, GenericAsset, GlobalVar, ServiceAsset)
 from .graph import Graph, NodeInstance
 from .node import ImplBinding, NodeType
-from .types import (TYPE_NOT_SET, ON_ALL_DATA_READY, Annot, ConfigField, ControlIn,
-                    ControlOut, DataIn, DataOut, InputGroup, StateField, TriggerIn,
-                    Wire)
+from .types import (TYPE_NOT_SET, CATEGORY_CUSTOM, ON_ALL_DATA_READY, Annot,
+                    ConfigField, ControlIn, ControlOut, DataIn, DataOut, InputGroup,
+                    StateField, TriggerIn, Wire)
 from .version import KERNEL_VERSION, compatible
 
 
@@ -161,6 +161,7 @@ def impl_binding_from_dict(d: dict) -> ImplBinding:
 
 def node_type_to_dict(nt: NodeType) -> dict:
     return {"name": nt.name,
+            "category": nt.category,
             "data_in": [data_in_to_dict(p) for p in nt.data_in],
             "data_out": [data_out_to_dict(p) for p in nt.data_out],
             "trigger_in": [trigger_in_to_dict(t) for t in nt.trigger_in],
@@ -175,7 +176,10 @@ def node_type_to_dict(nt: NodeType) -> dict:
 
 
 def node_type_from_dict(d: dict) -> NodeType:
+    # category 缺字段 = 枚举引入前的旧资产 → 归 custom(未知来源进自定义桶);
+    # 显式非法值由 NodeType.__post_init__ 严格拒绝
     return NodeType(name=d["name"],
+                    category=d.get("category", CATEGORY_CUSTOM),
                     data_in=[data_in_from_dict(x) for x in d.get("data_in", [])],
                     data_out=[data_out_from_dict(x) for x in d.get("data_out", [])],
                     trigger_in=[trigger_in_from_dict(x) for x in d.get("trigger_in", [])],

@@ -9,11 +9,12 @@ echo 回显是两个正交输出面。)
 
 from __future__ import annotations
 
-from ...model import DataIn, DataOut, ImplBinding, InputGroup, NodeType, StateField
+from ...model import CATEGORY_HOST, DataIn, DataOut, ImplBinding, InputGroup, NodeType, StateField
 from ..protocol import NodeImpl, TickContext, TickOutput
 
 OUTPUT = NodeType(
     name="Output",
+    category=CATEGORY_HOST,
     data_in=[DataIn("msg")],
     data_out=[DataOut("echo")],
     state=[StateField("lines", []), StateField("last_msg", None)],

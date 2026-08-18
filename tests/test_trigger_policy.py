@@ -15,11 +15,14 @@
 from eidolon_graph.engine import (AddEdge, AddNode, Event, NodeImpl, NodeRegistry,
                                   RemoveEdge, TickContext, TickOutput, World)
 from eidolon_graph.engine.builtins import register_builtins
-from eidolon_graph.model import (ACTIVE, INACTIVE, ON_ALL_DATA_READY, ON_ANY_DATA,
-                                 ON_DATA_AND_TRIGGER, ON_TRIGGER, AssetLibrary,
-                                 ControlIn, ControlOut, DataIn, DataOut, Graph,
-                                 ImplBinding, InputGroup, NodeInstance, NodeType,
-                                 TriggerIn, Wire)
+from eidolon_graph.model import (
+    CATEGORY_CUSTOM,
+    ACTIVE, INACTIVE, ON_ALL_DATA_READY, ON_ANY_DATA,
+    ON_DATA_AND_TRIGGER, ON_TRIGGER, AssetLibrary,
+    ControlIn, ControlOut, DataIn, DataOut, Graph,
+    ImplBinding, InputGroup, NodeInstance, NodeType,
+    TriggerIn, Wire
+)
 
 
 def make_env():
@@ -52,6 +55,7 @@ def make_policy_world(policy, inputs=("a", "b"), triggers=("t",), auto=False):
     lib, registry = make_env()
     nt = NodeType(
         name="Policy",
+        category=CATEGORY_CUSTOM,
         data_in=[DataIn(n) for n in inputs],
         trigger_in=[TriggerIn(n) for n in triggers],
         data_out=[DataOut("out")],
@@ -201,6 +205,7 @@ def test_required_closed_blocks_group_even_with_trigger():
     lib, registry = make_env()
     nt = NodeType(
         name="Policy",
+        category=CATEGORY_CUSTOM,
         data_in=[DataIn("a")],
         trigger_in=[TriggerIn("t")],
         data_out=[DataOut("out")],
@@ -238,6 +243,7 @@ def test_trigger_event_kept_while_gated():
     lib, registry = make_env()
     nt = NodeType(
         name="Policy",
+        category=CATEGORY_CUSTOM,
         trigger_in=[TriggerIn("t")],
         control_in=[ControlIn("enable", semantic="enable")],
         data_out=[DataOut("out")],

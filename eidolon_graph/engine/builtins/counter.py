@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from ...model import (Annot, ControlIn, DataIn, DataOut, ImplBinding, InputGroup,
+from ...model import (
+    CATEGORY_DATA,
+    Annot, ControlIn, DataIn, DataOut, ImplBinding, InputGroup,
                       NodeType, StateField)
 from ..protocol import NodeImpl, TickContext, TickOutput
 
 COUNTER = NodeType(
     name="Counter",
+    category=CATEGORY_DATA,
     data_in=[DataIn("increment", type_annot=Annot(int))],
     data_out=[DataOut("count", type_annot=Annot(int))],
     control_in=[ControlIn("enable")],

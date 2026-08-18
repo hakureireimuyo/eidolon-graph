@@ -21,11 +21,14 @@
 import json
 from copy import deepcopy
 
-from eidolon_graph.model import (ACTIVE, INACTIVE, Annot, AssetLibrary, ConfigField,
-                                 ControlIn, ControlOut, DataIn, DataOut, GenericAsset,
-                                 GlobalVar, Graph, ImplBinding, InputGroup, NodeInstance,
-                                 NodeType, ServiceAsset, StateField, Wire, serialize,
-                                 validate)
+from eidolon_graph.model import (
+    CATEGORY_CUSTOM,
+    ACTIVE, INACTIVE, Annot, AssetLibrary, ConfigField,
+    ControlIn, ControlOut, DataIn, DataOut, GenericAsset,
+    GlobalVar, Graph, ImplBinding, InputGroup, NodeInstance,
+    NodeType, ServiceAsset, StateField, Wire, serialize,
+    validate
+)
 from eidolon_graph.engine import (AddEdge, AddNode, Event, NodeImpl, NodeRegistry,
                                   RemoveEdge, RemoveNode, SetConfig, Snapshot,
                                   SubgraphNodeImpl, TickContext, TickOutput, World)
@@ -184,6 +187,7 @@ def test_4_graph_edit_migrates_running_state():
 
     lib.add_node_type(NodeType(
         name="Broken",
+        category=CATEGORY_CUSTOM,
         data_in=[DataIn("x")],  # 裸端口:无连线、无默认、无引用
         data_out=[DataOut("y")],
         groups=[InputGroup("pass", inputs=["x"], outputs=["y"])],
@@ -216,6 +220,7 @@ def test_5_llm_node_swappable_with_program_node():
     # 同协议(端口/状态/配置)两种实现:LLM 与普通程序
     reply_type = NodeType(
         name="Reply",
+        category=CATEGORY_CUSTOM,
         data_in=[DataIn("prompt", const_set=True, const="你好")],
         data_out=[DataOut("reply")],
         config=[ConfigField("style", "formal")],
@@ -272,6 +277,7 @@ def test_6_subgraph_encapsulation_invisible_to_host():
     lib.add_graph(inner)
     gauge_type = NodeType(
         name="Gauge",
+        category=CATEGORY_CUSTOM,
         data_out=[DataOut("total")],
         control_in=[ControlIn("enable")],
         control_out=[ControlOut("full")],
@@ -375,6 +381,7 @@ def test_extra_init_input():
     lib, registry = make_env()
     lib.add_node_type(NodeType(
         name="InitNode",
+        category=CATEGORY_CUSTOM,
         data_in=[DataIn("cfg"), DataIn("x")],
         data_out=[DataOut("out")],
         state=[StateField("total", 0, Annot(int))],
@@ -430,6 +437,7 @@ def test_extra_multi_group_methods():
     lib, registry = make_env()
     lib.add_node_type(NodeType(
         name="Multi",
+        category=CATEGORY_CUSTOM,
         data_in=[DataIn("a"), DataIn("b"), DataIn("c")],
         data_out=[DataOut("p"), DataOut("q")],
         groups=[InputGroup("ab", inputs=["a", "b"], outputs=["p"]),
@@ -479,12 +487,14 @@ def test_extra_globals():
 
     lib.add_node_type(NodeType(
         name="Recorder",
+        category=CATEGORY_CUSTOM,
         data_in=[DataIn("value")],
         data_out=[DataOut("echo", global_write="last")],
         groups=[InputGroup("rec", inputs=["value"], outputs=["echo"])],
         impl=ImplBinding(kind="code", name="Recorder")))
     lib.add_node_type(NodeType(
         name="Reporter",
+        category=CATEGORY_CUSTOM,
         data_in=[DataIn("seen", global_read="last")],
         data_out=[DataOut("out")],
         impl=ImplBinding(kind="code", name="Reporter")))
@@ -529,6 +539,7 @@ def test_extra_node_fault_circuit_breaker():
     lib, registry = make_env()
     lib.add_node_type(NodeType(
         name="Flaky",
+        category=CATEGORY_CUSTOM,
         data_in=[DataIn("x")],
         data_out=[DataOut("y")],
         groups=[InputGroup("go", inputs=["x"], outputs=["y"])],
@@ -575,6 +586,7 @@ def test_extra_asset_ref_validation():
 
     broken = NodeType(
         name="RefNode",
+        category=CATEGORY_CUSTOM,
         data_out=[DataOut("out")],
         config=[ConfigField("matrix_asset", "Missing@1.0", asset_ref="data")],
         impl=ImplBinding(kind="code", name="RefNode"))

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from ...model import ControlIn, ControlOut, ImplBinding, NodeType
+from ...model import CATEGORY_SIGNAL, ControlIn, ControlOut, ImplBinding, NodeType
 from ..protocol import NodeImpl, TickContext, TickOutput
 from ..signal import ACTIVE, INACTIVE
 
 NOT_NODE = NodeType(
     name="NOT",
+    category=CATEGORY_SIGNAL,
     control_in=[ControlIn("in", semantic="level")],
     control_out=[ControlOut("out")],
     impl=ImplBinding(kind="code", name="NOT"),

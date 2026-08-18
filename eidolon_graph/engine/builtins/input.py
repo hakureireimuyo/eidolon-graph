@@ -9,11 +9,12 @@ in 是可选参数端口(函数默认参数):不注入时组不产出。展示�
 
 from __future__ import annotations
 
-from ...model import DataIn, DataOut, ImplBinding, InputGroup, NodeType, StateField
+from ...model import CATEGORY_HOST, DataIn, DataOut, ImplBinding, InputGroup, NodeType, StateField
 from ..protocol import NodeImpl, TickContext, TickOutput
 
 INPUT = NodeType(
     name="Input",
+    category=CATEGORY_HOST,
     data_in=[DataIn("in", optional=True)],
     data_out=[DataOut("out")],
     state=[StateField("last", None)],

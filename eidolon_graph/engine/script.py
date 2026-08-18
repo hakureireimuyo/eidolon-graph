@@ -26,10 +26,10 @@ import builtins as _builtins
 from typing import Any
 
 from ..model.node import ImplBinding, NodeType
-from ..model.types import (ACTIVE, INACTIVE, ON_ALL_DATA_READY, ON_ANY_DATA,
-                           ON_DATA_AND_TRIGGER, ON_TRIGGER, Annot, ConfigField,
-                           ControlIn, ControlOut, DataIn, DataOut, InputGroup,
-                           StateField, TriggerIn)
+from ..model.types import (ACTIVE, CATEGORY_CUSTOM, INACTIVE, ON_ALL_DATA_READY,
+                           ON_ANY_DATA, ON_DATA_AND_TRIGGER, ON_TRIGGER, Annot,
+                           ConfigField, ControlIn, ControlOut, DataIn, DataOut,
+                           InputGroup, StateField, TriggerIn)
 from .protocol import InitContext, NodeImpl, ScheduleContext, TickContext, TickOutput
 
 __all__ = ["ScriptError", "compile_script", "compile_script_impl", "ScriptNodeImpl"]
@@ -95,6 +95,7 @@ def compile_script(source: str, type_name: str) -> tuple[NodeType, type[NodeImpl
 
     nt = NodeType(
         name=type_name,
+        category=CATEGORY_CUSTOM,  # 脚本节点 = 用户自定义类型,域恒为 custom
         data_in=_list("data_in"),
         data_out=_list("data_out"),
         trigger_in=_list("trigger_in"),

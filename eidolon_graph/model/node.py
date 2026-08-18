@@ -13,8 +13,8 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from .types import (ConfigField, ControlIn, ControlOut, DataIn, DataOut, InputGroup,
-                    StateField, TriggerIn)
+from .types import (Category, ConfigField, ControlIn, ControlOut, DataIn, DataOut,
+                    InputGroup, NODE_CATEGORIES, StateField, TriggerIn)
 
 
 @dataclass
@@ -34,6 +34,7 @@ class NodeType:
     """节点类型资产:像类一样只定义接口;实例 = 类型 + 配置覆盖 + 连线。"""
 
     name: str
+    category: Category              # 节点域分类(六值严格枚举,声明必填;语义见 types.py)
     data_in: list[DataIn] = field(default_factory=list)
     data_out: list[DataOut] = field(default_factory=list)
     trigger_in: list[TriggerIn] = field(default_factory=list)  # 函数调用级触发入口
@@ -45,6 +46,13 @@ class NodeType:
     init_in: list[str] = field(default_factory=list)       # __init__ 参数端口(数据输入)
     auto: bool = False  # 自走(源):每轮运行自动执行一次(时钟/计时器/随机)
     impl: ImplBinding = field(default_factory=ImplBinding)
+
+    def __post_init__(self) -> None:
+        """严格枚举:category 非法值在构造点即拒绝(声明与反序列化共用同一闸口)。"""
+        if self.category not in NODE_CATEGORIES:
+            raise ValueError(
+                f"节点类型 '{self.name}' 的 category 非法: {self.category!r}"
+                f"(允许值: {', '.join(NODE_CATEGORIES)})")
 
     # -- 声明查询(端口/字段名 → 声明) --
     def data_in_map(self) -> dict[str, DataIn]:

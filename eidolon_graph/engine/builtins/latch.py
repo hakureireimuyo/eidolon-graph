@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from ...model import Annot, ControlIn, ControlOut, ImplBinding, NodeType, StateField
+from ...model import CATEGORY_SIGNAL, Annot, ControlIn, ControlOut, ImplBinding, NodeType, StateField
 from ..protocol import NodeImpl, TickContext, TickOutput
 from ..signal import ACTIVE, INACTIVE
 
 LATCH = NodeType(
     name="Latch",
+    category=CATEGORY_SIGNAL,
     control_in=[ControlIn("set", semantic="level"), ControlIn("reset", semantic="level")],
     control_out=[ControlOut("q")],
     state=[StateField("q", False, Annot(bool))],

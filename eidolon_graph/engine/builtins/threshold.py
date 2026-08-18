@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from ...model import (ConfigField, ControlOut, DataIn, DataOut, ImplBinding,
+from ...model import (
+    CATEGORY_DATA,
+    ConfigField, ControlOut, DataIn, DataOut, ImplBinding,
                       InputGroup, NodeType)
 from ..protocol import NodeImpl, TickContext, TickOutput
 from ..signal import ACTIVE, INACTIVE
 
 THRESHOLD = NodeType(
     name="Threshold",
+    category=CATEGORY_DATA,
     data_in=[DataIn("value")],
     data_out=[DataOut("over")],
     control_out=[ControlOut("under", default_level=ACTIVE)],

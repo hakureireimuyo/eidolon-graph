@@ -17,10 +17,13 @@ from eidolon_graph.engine.protocol import NodeImpl, ScheduleContext, TickContext
 from eidolon_graph.engine.rng import Rng
 from eidolon_graph.engine.script import ScriptError, compile_script
 from eidolon_graph.engine.signal import ACTIVE, INACTIVE
-from eidolon_graph.model import (Annot, AssetLibrary, ConfigField, ControlIn, ControlOut,
-                                 DataIn, DataOut, Graph, ImplBinding, InputGroup,
-                                 NodeInstance, NodeType, StateField, TriggerIn, Wire,
-                                 serialize, validate)
+from eidolon_graph.model import (
+    CATEGORY_CUSTOM,
+    Annot, AssetLibrary, ConfigField, ControlIn, ControlOut,
+    DataIn, DataOut, Graph, ImplBinding, InputGroup,
+    NodeInstance, NodeType, StateField, TriggerIn, Wire,
+    serialize, validate
+)
 
 # ---------------------------------------------------------------------------
 # 脚本样例
@@ -326,7 +329,7 @@ def test_validate_script_ok_and_mismatch():
 def test_validate_script_syntax_error():
     lib, registry = make_env()
     # 直接构造损坏资产:source 语法错误(绕过编译;校验器应报告编译失败)
-    bad = NodeType(name="Broken", impl=ImplBinding(kind="script", source="def x(:"))
+    bad = NodeType(name="Broken", category=CATEGORY_CUSTOM, impl=ImplBinding(kind="script", source="def x(:"))
     lib.add_node_type(bad)
     g = Graph(name="g", nodes=[NodeInstance("n", "Broken")], wires=[])
     rep = validate(lib, g)

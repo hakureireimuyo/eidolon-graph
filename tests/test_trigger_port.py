@@ -11,10 +11,13 @@ import pytest
 
 from eidolon_graph.engine import Event, NodeImpl, NodeRegistry, TickContext, TickOutput, World
 from eidolon_graph.engine.builtins import register_builtins
-from eidolon_graph.model import (ON_ALL_DATA_READY, ON_TRIGGER, AssetLibrary,
-                                 ControlOut, DataIn, DataOut, Graph, ImplBinding,
-                                 InputGroup, NodeInstance, NodeType, TriggerIn, Wire,
-                                 serialize, validate)
+from eidolon_graph.model import (
+    CATEGORY_CUSTOM,
+    ON_ALL_DATA_READY, ON_TRIGGER, AssetLibrary,
+    ControlOut, DataIn, DataOut, Graph, ImplBinding,
+    InputGroup, NodeInstance, NodeType, TriggerIn, Wire,
+    serialize, validate
+)
 
 
 def make_env():
@@ -29,7 +32,7 @@ def make_env():
 # ---------------------------------------------------------------------------
 
 def test_trigger_in_serializes_roundtrip():
-    nt = NodeType(name="T", trigger_in=[TriggerIn("ev")],
+    nt = NodeType(name="T", category=CATEGORY_CUSTOM, trigger_in=[TriggerIn("ev")],
                   groups=[InputGroup("g", triggers=["ev"], outputs=[],
                                      policy=ON_TRIGGER)],
                   impl=ImplBinding(kind="code", name="T"))
@@ -83,7 +86,7 @@ def test_current_versions_load():
 # ---------------------------------------------------------------------------
 
 def _nt_with(trigger_in=None, groups=None, data_in=None):
-    return NodeType(name="T", data_in=data_in or [], trigger_in=trigger_in or [],
+    return NodeType(name="T", category=CATEGORY_CUSTOM, data_in=data_in or [], trigger_in=trigger_in or [],
                     groups=groups or [], impl=ImplBinding(kind="code", name="T"))
 
 
@@ -165,6 +168,7 @@ def test_subgraph_with_trigger_in_rejected():
     lib.add_graph(Graph(name="inner", nodes=[NodeInstance("i", "T")]))
     lib.add_node_type(NodeType(
         name="Sub",
+        category=CATEGORY_CUSTOM,
         trigger_in=[TriggerIn("ev")],
         groups=[InputGroup("g", triggers=["ev"], policy=ON_TRIGGER)],
         impl=ImplBinding(kind="subgraph", name="Sub", graph="inner")))
@@ -179,7 +183,7 @@ def test_subgraph_with_trigger_in_rejected():
 
 def test_data_wire_to_trigger_in_legal():
     lib = AssetLibrary()
-    lib.add_node_type(NodeType(name="Src", data_out=[DataOut("o")], auto=True,
+    lib.add_node_type(NodeType(name="Src", category=CATEGORY_CUSTOM, data_out=[DataOut("o")], auto=True,
                                impl=ImplBinding(kind="code", name="Src")))
     lib.add_node_type(_nt_with(
         trigger_in=[TriggerIn("ev")],
@@ -191,7 +195,7 @@ def test_data_wire_to_trigger_in_legal():
 
 def test_signal_wire_to_trigger_in_legal():
     lib = AssetLibrary()
-    lib.add_node_type(NodeType(name="Src", control_out=[ControlOut("o")],
+    lib.add_node_type(NodeType(name="Src", category=CATEGORY_CUSTOM, control_out=[ControlOut("o")],
                                impl=ImplBinding(kind="code", name="Src")))
     lib.add_node_type(_nt_with(
         trigger_in=[TriggerIn("ev")],
@@ -204,7 +208,7 @@ def test_signal_wire_to_trigger_in_legal():
 def test_data_output_signal_slot_to_trigger_in_legal():
     # 数据输出的信号端口 → TriggerIn 信号槽(电平触发,与数据线载荷区分)
     lib = AssetLibrary()
-    lib.add_node_type(NodeType(name="Src", data_out=[DataOut("o")], auto=True,
+    lib.add_node_type(NodeType(name="Src", category=CATEGORY_CUSTOM, data_out=[DataOut("o")], auto=True,
                                impl=ImplBinding(kind="code", name="Src")))
     lib.add_node_type(_nt_with(
         trigger_in=[TriggerIn("ev")],
@@ -224,6 +228,7 @@ def test_data_output_signal_slot_to_trigger_in_legal():
 
 ECHO_TRIG = NodeType(
     name="EchoTrig",
+    category=CATEGORY_CUSTOM,
     trigger_in=[TriggerIn("fire")],
     data_out=[DataOut("out")],
     groups=[InputGroup("g", triggers=["fire"], outputs=["out"], policy=ON_TRIGGER)],

@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 from ...engine.protocol import NodeImpl, TickContext, TickOutput
-from ...model import (ConfigField, DataIn, DataOut, ImplBinding,
+from ...model import (
+    CATEGORY_ENCAP,
+    ConfigField, DataIn, DataOut, ImplBinding,
                                  InputGroup, NodeType, StateField)
 
 # ---------------------------------------------------------------------------
@@ -16,6 +18,7 @@ from ...model import (ConfigField, DataIn, DataOut, ImplBinding,
 
 CONTEXT_STORE = NodeType(
     name="ContextStore",
+    category=CATEGORY_ENCAP,
     # 单组双输入(内核约束:每个输出只能属于一个组):reset 到达 = 开新会话,
     # 与下一次 append 一并生效(清空后本次 append 成为新的第一条)
     data_in=[DataIn("append", optional=True), DataIn("reset", optional=True)],
@@ -46,6 +49,7 @@ class ContextStoreImpl(NodeImpl):
 
 CONTEXT_COMPILE = NodeType(
     name="ContextCompile",
+    category=CATEGORY_ENCAP,
     # 两个输入都参与触发(都接线时):history 与 user 齐套才编译——因果序
     # 由数据流保证(store 先推 history,compile 后触发);history 未接线 =
     # 无历史上下文(空表)

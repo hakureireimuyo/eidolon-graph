@@ -12,10 +12,12 @@
 from .assets import AssetLibrary, ConstAsset, GenericAsset, GlobalVar, ServiceAsset
 from .graph import Graph, NodeInstance
 from .node import ImplBinding, NodeType
-from .types import (ACTIVE, INACTIVE, ON_ALL_DATA_READY, ON_ANY_DATA,
+from .types import (ACTIVE, CATEGORY_CUSTOM, CATEGORY_DATA, CATEGORY_ENCAP,
+                    CATEGORY_HOST, CATEGORY_SIGNAL, CATEGORY_SOURCE, INACTIVE,
+                    NODE_CATEGORIES, ON_ALL_DATA_READY, ON_ANY_DATA,
                     ON_DATA_AND_TRIGGER, ON_TRIGGER, TRIGGER_POLICIES, TYPE_NOT_SET,
-                    Annot, ConfigField, ControlIn, ControlOut, DataIn, DataOut,
-                    InputGroup, StateField, TriggerIn, TriggerPolicy, Wire)
+                    Annot, Category, ConfigField, ControlIn, ControlOut, DataIn,
+                    DataOut, InputGroup, StateField, TriggerIn, TriggerPolicy, Wire)
 from .validate import ValidationError, ValidationReport, validate
 from .version import KERNEL_VERSION, compatible
 from . import serialize
@@ -23,6 +25,8 @@ from . import serialize
 __all__ = [
     "KERNEL_VERSION", "compatible",
     "ACTIVE", "INACTIVE", "TYPE_NOT_SET",
+    "CATEGORY_SIGNAL", "CATEGORY_DATA", "CATEGORY_SOURCE", "CATEGORY_ENCAP",
+    "CATEGORY_HOST", "CATEGORY_CUSTOM", "NODE_CATEGORIES", "Category",
     "ON_ALL_DATA_READY", "ON_ANY_DATA", "ON_TRIGGER", "ON_DATA_AND_TRIGGER",
     "TRIGGER_POLICIES", "TriggerPolicy",
     "Annot", "DataIn", "DataOut", "TriggerIn", "ControlIn", "ControlOut",

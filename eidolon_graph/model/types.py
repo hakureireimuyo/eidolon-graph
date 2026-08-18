@@ -33,6 +33,24 @@ TRIGGER_POLICIES = (ON_ALL_DATA_READY, ON_ANY_DATA, ON_TRIGGER, ON_DATA_AND_TRIG
 TriggerPolicy = Literal["on_all_data_ready", "on_any_data", "on_trigger",
                         "on_data_and_trigger"]
 
+# 节点域分类(严格枚举;节点声明必填,序列化直存字符串):
+# - signal:纯信号运算元件(电平组合,如 AND/OR/NOT/Latch);
+# - data:数据节点(方法即转移函数,如 Join/Counter);
+# - source:自走源节点(每轮自动执行,如 Clock/Timer);
+# - encapsulation:封装节点(封装外部能力,如 LLM 调度);
+# - host:宿主交互节点(编辑器注入/控制台对接,如 Input/Output);
+# - custom:自定义节点(子图/脚本,用户自建类型)。
+# 域与形态正交:形态(信号节点/自走/子图)仍由声明派生,category 只回答"哪个域"。
+CATEGORY_SIGNAL = "signal"
+CATEGORY_DATA = "data"
+CATEGORY_SOURCE = "source"
+CATEGORY_ENCAP = "encapsulation"
+CATEGORY_HOST = "host"
+CATEGORY_CUSTOM = "custom"
+NODE_CATEGORIES = (CATEGORY_SIGNAL, CATEGORY_DATA, CATEGORY_SOURCE,
+                   CATEGORY_ENCAP, CATEGORY_HOST, CATEGORY_CUSTOM)
+Category = Literal["signal", "data", "source", "encapsulation", "host", "custom"]
+
 # 常见注解的字符串注册表(序列化时类型存为字符串名;未知名字按 Any 放行)
 _TYPE_REGISTRY: dict[str, Any] = {
     "int": int,

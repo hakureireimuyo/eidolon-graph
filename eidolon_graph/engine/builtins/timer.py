@@ -10,7 +10,9 @@
 
 from __future__ import annotations
 
-from ...model import (ON_DATA_AND_TRIGGER, Annot, ConfigField, ControlIn, ControlOut,
+from ...model import (
+    CATEGORY_SOURCE,
+    ON_DATA_AND_TRIGGER, Annot, ConfigField, ControlIn, ControlOut,
                       DataIn, DataOut, ImplBinding, InputGroup, NodeType, StateField,
                       TriggerIn)
 from ..protocol import NodeImpl, TickContext, TickOutput
@@ -18,6 +20,7 @@ from ..signal import ACTIVE, INACTIVE
 
 TIMER = NodeType(
     name="Timer",
+    category=CATEGORY_SOURCE,
     control_in=[ControlIn("start", semantic="level"), ControlIn("stop", semantic="level")],
     trigger_in=[TriggerIn("trigger")],
     data_in=[DataIn("delay", type_annot=Annot(int), optional=True)],  # 未连线回退 duration

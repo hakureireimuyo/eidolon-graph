@@ -10,12 +10,15 @@
 
 from __future__ import annotations
 
-from ...model import (ON_TRIGGER, DataIn, DataOut, ImplBinding, InputGroup, NodeType,
+from ...model import (
+    CATEGORY_DATA,
+    ON_TRIGGER, DataIn, DataOut, ImplBinding, InputGroup, NodeType,
                       StateField, TriggerIn)
 from ..protocol import NodeImpl, TickContext, TickOutput
 
 BUFFER = NodeType(
     name="Buffer",
+    category=CATEGORY_DATA,
     data_in=[DataIn("put")],
     trigger_in=[TriggerIn("flush")],  # 激活入口:触发输出并清空,载荷忽略
     data_out=[DataOut("items")],
