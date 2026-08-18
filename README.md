@@ -11,7 +11,7 @@ eidolon_graph/
 └── nodes/   ← 节点封装层(官方节点包,如 llm):引用独立能力库,只做协议包装,模型调用逻辑全在能力库
 ```
 
-- `docs/` — 内核设计文档:总纲 / 执行模型 / 端口绑定 / 节点类型 / 资产 / 持久化与编辑 / 工程组织 / LLM 封装层
+- `docs/` — 内核设计文档:总纲 / 执行模型 / 端口绑定 / 节点类型 / 资产 / 持久化与编辑 / 工程组织 / 触发语义与语义审计 / LLM 封装层
 - `tests/` — 阶段零六性质(`test_stage_zero.py`)、因果传播(`test_causal_propagation.py`)、节点协议 ABI(`test_node_protocol_abi.py`)、LLM 节点端到端(`test_llm_nodes.py`)
 
 ## 原则
