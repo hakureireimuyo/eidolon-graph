@@ -45,16 +45,17 @@
 
 ## 3. 节点域分类(category,1.3)
 
-每个节点类型声明一个**域分类**,六值严格枚举,声明必填、构造点校验(`NodeType.__post_init__`):
+每个节点类型声明一个**域分类**,七值严格枚举,声明必填、构造点校验(`NodeType.__post_init__`):
 
 | 值 | 含义 | 内置节点 |
 |---|---|---|
 | `signal` | 纯信号运算元件(电平组合) | AND / OR / NOT / Latch |
-| `data` | 数据节点(方法即转移函数) | Join / MultiGate / Buffer / Switch / Threshold / Comparator / Counter |
-| `source` | 自走源节点(每轮自动执行) | Clock / Timer / Simulate / Random |
+| `data` | 数据节点(方法即转移函数) | Join / Buffer / Switch / Threshold / Comparator / Counter / Random |
+| `source` | 自走源节点(每轮自动执行) | Clock / Timer |
 | `encapsulation` | 封装节点(封装外部能力) | LlmCall / ContextStore / ContextCompile |
 | `host` | 宿主交互节点(编辑器注入/控制台对接) | Input / Output |
 | `custom` | 自定义节点(用户自建类型) | 子图 / 脚本节点(编译产物自动 `custom`) |
+| `test` | 测试节点(验证系统运行/渲染效果,非基础节点) | MultiGate / Simulate |
 
 设计要点:
 

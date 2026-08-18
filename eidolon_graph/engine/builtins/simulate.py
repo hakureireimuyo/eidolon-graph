@@ -18,12 +18,12 @@ from __future__ import annotations
 
 import time
 
-from ...model import CATEGORY_SOURCE, Annot, ConfigField, DataIn, DataOut, ImplBinding, InputGroup, NodeType, StateField
+from ...model import CATEGORY_TEST, Annot, ConfigField, DataIn, DataOut, ImplBinding, InputGroup, NodeType, StateField
 from ..protocol import NodeImpl, TickContext, TickOutput
 
 SIMULATE = NodeType(
     name="Simulate",
-    category=CATEGORY_SOURCE,
+    category=CATEGORY_TEST,
     data_in=[DataIn("trigger")],
     data_out=[DataOut("result")],
     config=[ConfigField("mode", "ok", Annot(str)),

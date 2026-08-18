@@ -13,7 +13,7 @@ random(num, seed, range) → draw:
 from __future__ import annotations
 
 from ...model import (
-    CATEGORY_SOURCE,
+    CATEGORY_DATA,
     Annot, ConfigField, DataIn, DataOut, ImplBinding, InputGroup,
                       NodeType, StateField)
 from ..protocol import NodeImpl, TickContext, TickOutput
@@ -21,7 +21,7 @@ from ..rng import Rng, derive_seed
 
 RANDOM = NodeType(
     name="Random",
-    category=CATEGORY_SOURCE,
+    category=CATEGORY_DATA,
     data_in=[DataIn("num", optional=True),
              DataIn("seed", optional=True),
              DataIn("range", optional=True)],

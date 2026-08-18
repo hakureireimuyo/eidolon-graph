@@ -13,8 +13,8 @@ from eidolon_graph.engine.builtins import (register_builtins)
 from eidolon_graph.engine.registry import NodeRegistry
 from eidolon_graph.model import (CATEGORY_CUSTOM, CATEGORY_DATA, CATEGORY_ENCAP,
                                  CATEGORY_HOST, CATEGORY_SIGNAL, CATEGORY_SOURCE,
-                                 NODE_CATEGORIES, AssetLibrary, DataOut,
-                                 ImplBinding, NodeType, serialize)
+                                 CATEGORY_TEST, NODE_CATEGORIES, AssetLibrary,
+                                 DataOut, ImplBinding, NodeType, serialize)
 from eidolon_graph.nodes.llm import register_llm_nodes
 
 
@@ -25,11 +25,11 @@ from eidolon_graph.nodes.llm import register_llm_nodes
 EXPECTED = {
     "AND": CATEGORY_SIGNAL, "OR": CATEGORY_SIGNAL, "NOT": CATEGORY_SIGNAL,
     "Latch": CATEGORY_SIGNAL,
-    "Join": CATEGORY_DATA, "MultiGate": CATEGORY_DATA, "Buffer": CATEGORY_DATA,
-    "Switch": CATEGORY_DATA, "Threshold": CATEGORY_DATA,
-    "Comparator": CATEGORY_DATA, "Counter": CATEGORY_DATA,
+    "Join": CATEGORY_DATA, "Buffer": CATEGORY_DATA, "Switch": CATEGORY_DATA,
+    "Threshold": CATEGORY_DATA, "Comparator": CATEGORY_DATA,
+    "Counter": CATEGORY_DATA, "Random": CATEGORY_DATA,
     "Clock": CATEGORY_SOURCE, "Timer": CATEGORY_SOURCE,
-    "Simulate": CATEGORY_SOURCE, "Random": CATEGORY_SOURCE,
+    "MultiGate": CATEGORY_TEST, "Simulate": CATEGORY_TEST,
     "LlmCall": CATEGORY_ENCAP, "ContextStore": CATEGORY_ENCAP,
     "ContextCompile": CATEGORY_ENCAP,
     "Input": CATEGORY_HOST, "Output": CATEGORY_HOST,

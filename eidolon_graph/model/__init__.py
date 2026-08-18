@@ -13,8 +13,8 @@ from .assets import AssetLibrary, ConstAsset, GenericAsset, GlobalVar, ServiceAs
 from .graph import Graph, NodeInstance
 from .node import ImplBinding, NodeType
 from .types import (ACTIVE, CATEGORY_CUSTOM, CATEGORY_DATA, CATEGORY_ENCAP,
-                    CATEGORY_HOST, CATEGORY_SIGNAL, CATEGORY_SOURCE, INACTIVE,
-                    NODE_CATEGORIES, ON_ALL_DATA_READY, ON_ANY_DATA,
+                    CATEGORY_HOST, CATEGORY_SIGNAL, CATEGORY_SOURCE, CATEGORY_TEST,
+                    INACTIVE, NODE_CATEGORIES, ON_ALL_DATA_READY, ON_ANY_DATA,
                     ON_DATA_AND_TRIGGER, ON_TRIGGER, TRIGGER_POLICIES, TYPE_NOT_SET,
                     Annot, Category, ConfigField, ControlIn, ControlOut, DataIn,
                     DataOut, InputGroup, StateField, TriggerIn, TriggerPolicy, Wire)
@@ -26,7 +26,8 @@ __all__ = [
     "KERNEL_VERSION", "compatible",
     "ACTIVE", "INACTIVE", "TYPE_NOT_SET",
     "CATEGORY_SIGNAL", "CATEGORY_DATA", "CATEGORY_SOURCE", "CATEGORY_ENCAP",
-    "CATEGORY_HOST", "CATEGORY_CUSTOM", "NODE_CATEGORIES", "Category",
+    "CATEGORY_HOST", "CATEGORY_CUSTOM", "CATEGORY_TEST", "NODE_CATEGORIES",
+    "Category",
     "ON_ALL_DATA_READY", "ON_ANY_DATA", "ON_TRIGGER", "ON_DATA_AND_TRIGGER",
     "TRIGGER_POLICIES", "TriggerPolicy",
     "Annot", "DataIn", "DataOut", "TriggerIn", "ControlIn", "ControlOut",

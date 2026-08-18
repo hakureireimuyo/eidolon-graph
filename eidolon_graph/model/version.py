@@ -10,9 +10,9 @@
 Printer 类型不再存在,加载后校验报未声明类型(无迁移)。
 1.2.0-0:Script 可编程节点——impl.kind="script" 内嵌 Python 脚本(声明 = 编译
 产物,权威在脚本;实现映射到 NodeImpl 全能力),新增声明一致性校验。
-1.3.0-0:节点域分类——NodeType.category 六值严格枚举(signal/data/source/
-encapsulation/host/custom),声明必填、构造点校验;旧资产缺字段反序列化兜底
-custom,向后兼容。
+1.3.0-0:节点域分类——NodeType.category 七值严格枚举(signal/data/source/
+encapsulation/host/custom/test),声明必填、构造点校验;旧资产缺字段反序列化
+兜底 custom,向后兼容。
 """
 
 KERNEL_VERSION = "1.3.0-0"
