@@ -21,7 +21,7 @@ def make_buffer_graph():
         NodeInstance("in_put", "Input"),
         NodeInstance("in_flush", "Input"),
         NodeInstance("buffer", "Buffer"),
-        NodeInstance("printer", "Printer"),
+        NodeInstance("printer", "Output"),
     ], wires=[
         Wire("in_put", "out", "buffer", "put"),
         Wire("in_flush", "out", "buffer", "flush"),

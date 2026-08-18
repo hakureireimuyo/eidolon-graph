@@ -149,12 +149,13 @@ def wire_from_dict(d: dict) -> Wire:
 # ---------------------------------------------------------------------------
 
 def impl_binding_to_dict(b: ImplBinding) -> dict:
-    return {"kind": b.kind, "name": b.name, "graph": b.graph,
+    return {"kind": b.kind, "name": b.name, "graph": b.graph, "source": b.source,
             "port_map": {k: list(v) for k, v in b.port_map.items()}}
 
 
 def impl_binding_from_dict(d: dict) -> ImplBinding:
     return ImplBinding(kind=d.get("kind", "code"), name=d.get("name"), graph=d.get("graph"),
+                       source=d.get("source"),
                        port_map={k: tuple(v) for k, v in d.get("port_map", {}).items()})
 
 

@@ -1,8 +1,9 @@
-"""Delay 延时节点 + Simulate 模拟节点 + 配置字段 asset_ref 运行时解析。
+"""Timer 倒计时器(吸收 Delay) + Simulate 模拟节点 + 配置字段 asset_ref 运行时解析。
 
 覆盖:
-- Delay:同步模式按轮倒计时输出、新触发重置、schedule 装填语义、
-  实时模式(装填后按秒发射——源节点组触发后重查调度的引擎修复);
+- Timer:触发面(trigger+delay 装填、同步模式按轮倒计时输出、新触发重置、
+  schedule 装填语义、实时模式按秒发射)、控制面(start/stop 电平倒计时与
+  running 信号、循环重装);
 - Simulate:ok(长时间运行后正确输出)/ error(异常策略:不产出 + 日志 + 熔断)/
   hang(真实卡死:run 永不返回、无输出);
 - 配置语义扩展:asset_ref 配置字段经 World(runtime_assets=...) 解析成运行时对象,
@@ -17,6 +18,7 @@ import pytest
 from eidolon_graph.engine import (Event, NodeImpl, NodeRegistry, ScheduleContext,
                                   SetConfig, TickContext, TickOutput, World)
 from eidolon_graph.engine.builtins import register_builtins
+from eidolon_graph.engine.signal import ACTIVE, INACTIVE
 from eidolon_graph.model import (Annot, AssetLibrary, ConfigField, DataIn, DataOut,
                                  Graph, ImplBinding, InputGroup, NodeInstance,
                                  NodeType, ServiceAsset, Wire)
@@ -37,8 +39,8 @@ def make_delay_graph():
     return Graph(name="delay", nodes=[
         NodeInstance("in_delay", "Input"),
         NodeInstance("in_trigger", "Input"),
-        NodeInstance("delay", "Delay"),
-        NodeInstance("printer", "Printer"),
+        NodeInstance("delay", "Timer"),
+        NodeInstance("printer", "Output"),
     ], wires=[
         Wire("in_delay", "out", "delay", "delay"),
         Wire("in_trigger", "out", "delay", "trigger"),
@@ -50,7 +52,7 @@ def fire(w, delay, payload):
     w.run([Event("in_delay", "in", delay), Event("in_trigger", "in", payload)])
 
 
-def test_delay_outputs_after_n_epochs():
+def test_timer_trigger_outputs_after_n_epochs():
     lib, registry = make_env()
     w = World(lib, make_delay_graph(), registry)
     fire(w, 2, "A")          # 第 1 轮:装填 remaining=2
@@ -63,7 +65,7 @@ def test_delay_outputs_after_n_epochs():
     assert w._states["printer"].state["last_msg"] == "A"
 
 
-def test_delay_retrigger_resets_countdown():
+def test_timer_retrigger_resets_countdown():
     lib, registry = make_env()
     w = World(lib, make_delay_graph(), registry)
     fire(w, 2, "A")          # 装填 remaining=2
@@ -75,13 +77,46 @@ def test_delay_retrigger_resets_countdown():
     assert w._states["printer"].state["last_msg"] == "B"
 
 
-def test_delay_schedule_armed_only():
-    impl = __import__("eidolon_graph.engine.builtins.delay", fromlist=["DelayImpl"]).DelayImpl()
-    assert impl.schedule(ScheduleContext(state={"pending": "x"}, config={})) == 1.0
-    assert impl.schedule(ScheduleContext(state={"pending": None}, config={})) is None
+def test_timer_schedule_armed_only():
+    impl = __import__("eidolon_graph.engine.builtins.timer", fromlist=["TimerImpl"]).TimerImpl()
+    assert impl.schedule(ScheduleContext(state={"remaining": 5}, config={})) == 1.0
+    assert impl.schedule(ScheduleContext(state={"remaining": 0}, config={})) is None
+
+def test_timer_start_level_countdown_and_running():
+    """start 高电平:装填 duration 并扣减,归零 running 翻低,start 在场循环重装。"""
+    lib, registry = make_env()
+    w = World(lib, Graph(name="timer", nodes=[NodeInstance("timer", "Timer")]), registry)
+    w.run()  # 未启动:remaining=0, running 低
+    assert w._states["timer"].state["remaining"] == 0
+    assert w.control_out_levels[("timer", "running")] == INACTIVE
+    w.run([Event("timer", "start", ACTIVE, kind="control")])  # 装填 duration=5 并扣减
+    assert w._states["timer"].state["remaining"] == 4
+    assert w.control_out_levels[("timer", "running")] == ACTIVE
+    w.run()  # start 仍高:继续扣减
+    assert w._states["timer"].state["remaining"] == 3
+    for _ in range(2):
+        w.run()  # 2、1
+    w.run()  # 归零:running 翻低
+    assert w._states["timer"].state["remaining"] == 0
+    assert w.control_out_levels[("timer", "running")] == INACTIVE
+    w.run()  # start 仍高:循环重新装填并扣减
+    assert w._states["timer"].state["remaining"] == 4
 
 
-def test_delay_realtime_ticks_per_second():
+def test_timer_stop_zeroes_immediately():
+    """stop 高电平:立即归零并解除装填;stop 不再高后保持 0。"""
+    lib, registry = make_env()
+    w = World(lib, Graph(name="timer", nodes=[NodeInstance("timer", "Timer")]), registry)
+    w.run([Event("timer", "start", ACTIVE, kind="control")])
+    assert w._states["timer"].state["remaining"] == 4
+    w.run([Event("timer", "stop", ACTIVE, kind="control")])
+    assert w._states["timer"].state["remaining"] == 0
+    assert w.control_out_levels[("timer", "running")] == INACTIVE
+    w.run()  # stop 不再高:保持 0
+    assert w._states["timer"].state["remaining"] == 0
+
+
+def test_timer_realtime_ticks_per_second():
     """实时模式:装填后按秒发射(delay=1 → 约 1 秒后输出)。
 
     依赖引擎修复:源节点的组触发后按最新状态重查调度——否则装填后

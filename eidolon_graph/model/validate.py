@@ -168,9 +168,11 @@ def _validate_node(rep: ValidationReport, lib: AssetLibrary, ni: NodeInstance,
                 rep.error(f"节点 [{nid}] 是数据节点(未声明控制输出),控制输入 '{c.name}' "
                           f"只能使用门控语义(enable),不能使用 '{c.semantic}'")
 
-    # 子图实现绑定
+    # 实现绑定专项校验:子图(端口映射)与脚本(编译 + 声明一致)
     if nt.impl.kind == "subgraph":
         _validate_subgraph_binding(rep, lib, nid, nt)
+    elif nt.impl.kind == "script":
+        _validate_script_binding(rep, nid, nt)
 
 
 def _validate_groups(rep: ValidationReport, nid: str, nt: NodeType,
@@ -294,6 +296,55 @@ def _validate_subgraph_binding(rep: ValidationReport, lib: AssetLibrary, nid: st
     for c in list(nt.control_in) + list(nt.control_out):
         if c.name not in pm:
             rep.warning(f"节点 [{nid}] 子图控制端口 '{c.name}' 未映射:仅父层语义/不导出")
+
+
+def _validate_script_binding(rep: ValidationReport, nid: str, nt: NodeType) -> None:
+    """脚本实现绑定:source 存在、编译成功、脚本声明与资产声明一致(权威在脚本)。"""
+    from ..engine.script import ScriptError, compile_script  # 延迟导入:避免 model ↔ engine 模块级循环
+
+    if not nt.impl.source:
+        rep.error(f"节点 [{nid}] 脚本类型 '{nt.name}' 缺少脚本正文(impl.source 为空)")
+        return
+    try:
+        compiled, _ = compile_script(nt.impl.source, nt.name)
+    except ScriptError as e:
+        rep.error(f"节点 [{nid}] 脚本类型 '{nt.name}' 编译失败:{e}")
+        return
+
+    def _names(ports: list) -> list[str]:
+        return [p.name for p in ports]
+
+    def _groups(groups: list) -> list[tuple]:
+        return [(g.name, list(g.inputs), list(g.triggers), list(g.outputs), g.policy)
+                for g in groups]
+
+    def _fields(fields: list) -> list[tuple]:
+        return [(f.name, repr(f.default)) for f in fields]
+
+    mismatches: list[str] = []
+    if _names(compiled.data_in) != _names(nt.data_in):
+        mismatches.append("data_in")
+    if _names(compiled.data_out) != _names(nt.data_out):
+        mismatches.append("data_out")
+    if _names(compiled.trigger_in) != _names(nt.trigger_in):
+        mismatches.append("trigger_in")
+    if _names(compiled.control_in) != _names(nt.control_in):
+        mismatches.append("control_in")
+    if _names(compiled.control_out) != _names(nt.control_out):
+        mismatches.append("control_out")
+    if _groups(compiled.groups) != _groups(nt.groups):
+        mismatches.append("groups")
+    if _fields(compiled.state) != _fields(nt.state):
+        mismatches.append("state")
+    if _fields(compiled.config) != _fields(nt.config):
+        mismatches.append("config")
+    if list(compiled.init_in) != list(nt.init_in):
+        mismatches.append("init_in")
+    if compiled.auto != nt.auto:
+        mismatches.append("auto")
+    if mismatches:
+        rep.error(f"节点 [{nid}] 脚本类型 '{nt.name}' 的声明({', '.join(mismatches)})"
+                  f"与资产声明不一致——脚本是声明权威,请以脚本重新编译资产")
 
 
 def _validate_wires(rep: ValidationReport, lib: AssetLibrary, graph: Graph) -> None:

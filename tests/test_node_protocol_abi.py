@@ -75,7 +75,7 @@ def make_graph():
     return Graph(name="abi", nodes=[
         NodeInstance("i1", "Input"),
         NodeInstance("ask", "AskLLM"),
-        NodeInstance("printer", "Printer"),
+        NodeInstance("printer", "Output"),
     ], wires=[
         Wire("i1", "out", "ask", "prompt"),
         Wire("ask", "response", "printer", "msg"),
@@ -231,7 +231,7 @@ def test_trigger_port_fires_on_injected_payload():
     registry.register("TrigGate", TrigGateImpl)
     g = Graph(name="tg", nodes=[
         NodeInstance("tg", "TrigGate"),
-        NodeInstance("printer", "Printer"),
+        NodeInstance("printer", "Output"),
     ], wires=[Wire("tg", "out", "printer", "msg")])
     w = World(lib, g, registry)
     w.run([Event("tg", "go", "你好")])

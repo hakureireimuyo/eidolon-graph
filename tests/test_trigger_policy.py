@@ -63,7 +63,7 @@ def make_policy_world(policy, inputs=("a", "b"), triggers=("t",), auto=False):
     lib.add_node_type(nt)
     registry.register("Policy", PolicyImpl)
     nodes = [NodeInstance(f"in_{p}", "Input") for p in inputs]
-    nodes += [NodeInstance("n", "Policy"), NodeInstance("printer", "Printer")]
+    nodes += [NodeInstance("n", "Policy"), NodeInstance("printer", "Output")]
     wires = [Wire(f"in_{p}", "out", "n", p) for p in inputs]
     wires.append(Wire("n", "out", "printer", "msg"))
     g = Graph(name="policy", nodes=nodes, wires=wires)
@@ -124,7 +124,7 @@ def make_latch_buffer_world():
         NodeInstance("in", "Input"),
         NodeInstance("latch", "Latch"),
         NodeInstance("buffer", "Buffer"),
-        NodeInstance("printer", "Printer"),
+        NodeInstance("printer", "Output"),
     ], wires=[
         Wire("in", "out", "buffer", "put"),
         Wire("latch", "q", "buffer", "flush", dst_slot="signal"),  # 信号线 → 触发入口
@@ -214,7 +214,7 @@ def test_required_closed_blocks_group_even_with_trigger():
         NodeInstance("in_a", "Input"),
         NodeInstance("latch", "Latch"),
         NodeInstance("n", "Policy"),
-        NodeInstance("printer", "Printer"),
+        NodeInstance("printer", "Output"),
     ], wires=[
         Wire("in_a", "out", "n", "a"),
         Wire("latch", "q", "n", "a", dst_slot="signal"),  # 显式信号线屏蔽 a
@@ -248,7 +248,7 @@ def test_trigger_event_kept_while_gated():
     registry.register("Policy", PolicyImpl)
     g = Graph(name="g", nodes=[
         NodeInstance("n", "Policy"),
-        NodeInstance("printer", "Printer"),
+        NodeInstance("printer", "Output"),
     ], wires=[Wire("n", "out", "printer", "msg")])
     w = World(lib, g, registry)
     w.run([Event("n", "enable", INACTIVE, kind="control")])  # 关门

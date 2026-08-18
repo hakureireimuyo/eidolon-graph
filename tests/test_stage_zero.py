@@ -49,7 +49,7 @@ def make_loop(lib, name="loop", limit=5):
         NodeInstance("clock", "Clock"),
         NodeInstance("counter", "Counter"),
         NodeInstance("threshold", "Threshold", {"limit": limit}),
-        NodeInstance("printer", "Printer"),
+        NodeInstance("printer", "Output"),
         NodeInstance("rng1", "Random"),
     ]
     wires = [
@@ -285,7 +285,7 @@ def test_6_subgraph_encapsulation_invisible_to_host():
 
     outer = Graph(
         name="outer",
-        nodes=[NodeInstance("gauge", "Gauge"), NodeInstance("printer", "Printer")],
+        nodes=[NodeInstance("gauge", "Gauge"), NodeInstance("printer", "Output")],
         wires=[Wire("gauge", "total", "printer", "msg")],
     )
     w = World(lib, outer, registry, seed=7)
@@ -320,7 +320,7 @@ def test_extra_signal_mask_and_propagation():
         NodeInstance("clock", "Clock"),
         NodeInstance("counter", "Counter"),
         NodeInstance("threshold", "Threshold", {"limit": 5}),
-        NodeInstance("printer", "Printer"),
+        NodeInstance("printer", "Output"),
     ], wires=[
         Wire("clock", "count", "counter", "increment"),
         Wire("counter", "count", "threshold", "value"),
@@ -631,7 +631,7 @@ def test_extra_data_out_signal_wire_validate():
     """数据输出信号端口可连任意信号接收端;数据槽连控制输入仍报交叉连线。"""
     lib, _ = make_env()
     nodes = [NodeInstance("clock", "Clock"), NodeInstance("sw", "Switch"),
-             NodeInstance("and1", "AND"), NodeInstance("printer", "Printer")]
+             NodeInstance("and1", "AND"), NodeInstance("printer", "Output")]
     wires = [
         Wire("clock", "count", "sw", "value"),
         # 组端口必须连线(数据线),信号槽与之并存(扇入按槽位区分)
@@ -673,7 +673,7 @@ def test_extra_data_out_signal_wire_masks_data_in():
     lib, registry = make_env()
     nodes = [NodeInstance("clock", "Clock"), NodeInstance("counter", "Counter"),
              NodeInstance("threshold", "Threshold", {"limit": 2}),
-             NodeInstance("printer", "Printer"), NodeInstance("clock2", "Clock")]
+             NodeInstance("printer", "Output"), NodeInstance("clock2", "Clock")]
     wires = [
         Wire("clock", "count", "counter", "increment"),
         Wire("counter", "count", "threshold", "value"),
@@ -782,7 +782,7 @@ def test_extra_random_function():
     # 只连 seed:时钟输出 → seed,num/range 用配置默认
     g = Graph(name="rnd", nodes=[NodeInstance("clock", "Clock"),
                                  NodeInstance("r1", "Random", {"num": 10, "range": 100}),
-                                 NodeInstance("printer", "Printer")],
+                                 NodeInstance("printer", "Output")],
               wires=[Wire("clock", "count", "r1", "seed"),
                      Wire("r1", "draw", "printer", "msg")])
     w = World(lib, g, registry, seed=0)
@@ -793,7 +793,7 @@ def test_extra_random_function():
 
     # 无任何输入:自身不独立输出
     g2 = Graph(name="rnd2", nodes=[NodeInstance("r1", "Random", {"seed": 7, "range": 10}),
-                                   NodeInstance("printer", "Printer")],
+                                   NodeInstance("printer", "Output")],
                wires=[Wire("r1", "draw", "printer", "msg")])
     w2 = World(lib, g2, registry, seed=0)
     w2.run()
@@ -814,7 +814,7 @@ def test_extra_join_multi_input():
     g = Graph(name="join", nodes=[NodeInstance("c1", "Clock"),
                                   NodeInstance("c2", "Clock"),
                                   NodeInstance("j1", "Join"),
-                                  NodeInstance("printer", "Printer")],
+                                  NodeInstance("printer", "Output")],
               wires=[Wire("c1", "count", "j1", "a"),
                      Wire("c2", "count", "j1", "b"),
                      Wire("j1", "out", "printer", "msg")])
@@ -826,7 +826,7 @@ def test_extra_join_multi_input():
     g2 = Graph(name="join2", nodes=[NodeInstance("i1", "Input"),
                                     NodeInstance("i2", "Input"),
                                     NodeInstance("j1", "Join"),
-                                    NodeInstance("printer", "Printer")],
+                                    NodeInstance("printer", "Output")],
                wires=[Wire("i1", "out", "j1", "a"),
                       Wire("i2", "out", "j1", "b"),
                       Wire("j1", "out", "printer", "msg")])
@@ -848,7 +848,7 @@ def test_extra_join_multi_input():
     g3 = Graph(name="join3", nodes=[NodeInstance("j1", "Join"),
                                     NodeInstance("i1", "Input"),
                                     NodeInstance("i2", "Input"),
-                                    NodeInstance("printer", "Printer")],
+                                    NodeInstance("printer", "Output")],
                wires=[Wire("i1", "out", "j1", "a"),
                       Wire("i2", "out", "j1", "b"),
                       Wire("j1", "out", "printer", "msg")])
@@ -876,11 +876,11 @@ def test_input_same_value_reinject_fires():
     assert w._states["counter"].state["count"] == 10
 
 
-def test_pulse_clock_sequence():
-    """Pulse 脉冲时钟(时钟序列):与 Clock 同构的周期信号源——每次发射电平翻转,
-    输出高/低交替的方波;信号门控数据流(高拍计数、低拍停住)。"""
+def test_clock_sig_sequence():
+    """Clock 信号面(sig):周期源每次发射电平翻转——输出高/低交替的方波;
+    信号门控数据流(高拍计数、低拍停住)。"""
     lib, registry = make_env()
-    g = Graph(name="pulse", nodes=[NodeInstance("p1", "Pulse"),
+    g = Graph(name="pulse", nodes=[NodeInstance("p1", "Clock"),
                                    NodeInstance("c1", "Clock")],
               wires=[Wire("p1", "sig", "c1", "enable", dst_slot="signal")])
     w = World(lib, g, registry, seed=0)
@@ -910,7 +910,7 @@ def test_builtin_node_docs():
             assert isinstance(s, dict) and "title" in s and "lines" in s
             assert all(isinstance(l, str) for l in s["lines"])
     # 内置节点全部带说明书(编辑器的调色板悬停/节点详情展示)
-    for name in ("Clock", "Pulse", "Input", "Output", "Threshold", "Join"):
+    for name in ("Clock", "Timer", "Input", "Output", "Threshold", "Join"):
         d = registry.get(name)().doc()
         assert d["summary"], f"{name} 缺少概要"
         assert d["sections"], f"{name} 缺少说明分节"

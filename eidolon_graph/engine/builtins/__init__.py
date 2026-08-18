@@ -1,7 +1,10 @@
 """内置节点库:一节点一文件,全部节点归属内核(运行时不缺节点)。
 
-Clock / Counter / Comparator / AND / OR / NOT / Switch / Latch / Timer /
-Delay / Buffer / MultiGate / Pulse / Threshold / Printer / Random / Simulate / Join / Output / Input。
+Clock / Counter / Threshold / Comparator / AND / OR / NOT / Switch / Latch /
+Timer / Buffer / MultiGate / Random / Simulate / Join / Output / Input(17 个)。
+
+(1.1 合并:Clock 吸收 Pulse、Timer 吸收 Delay、Output 吸收 Printer——
+基础语义组件收敛,见各节点模块头注。)
 
 - 全部是**普通节点类型资产**(运行时对它们零特殊处理)——它们同时是节点协议
   的自证与编辑器的基础元件;
@@ -12,7 +15,7 @@ Delay / Buffer / MultiGate / Pulse / Threshold / Printer / Random / Simulate / J
 
 约定:
 - 数据节点(无控制输出)不触碰信号:输入信号屏蔽由引擎旁路,输出信号由自动传导;
-- 信号节点(有控制输出)显式写信号电平:AND/OR/NOT/Latch/Timer/Threshold 等;
+- 信号节点(有控制输出)显式写信号电平:AND/OR/NOT/Latch/Timer/Clock 等;
 - 门控/熔断全部由运行时拦截,实现者无感知;
 - 处理不了的非 None 输入 → 抛异常,走引擎异常策略(不产出 + 日志 + 熔断)。
 """
@@ -27,7 +30,6 @@ from .buffer import BUFFER, BufferImpl
 from .clock import CLOCK, ClockImpl
 from .comparator import COMPARATOR, ComparatorImpl
 from .counter import COUNTER, CounterImpl
-from .delay import DELAY, DelayImpl
 from .input import INPUT, InputImpl
 from .join import JOIN, JoinImpl
 from .multigate import MULTIGATE, MultiGateImpl
@@ -35,8 +37,6 @@ from .latch import LATCH, LatchImpl
 from .not_node import NOT_NODE, NotImpl
 from .or_node import OR_NODE, OrImpl
 from .output import OUTPUT, OutputImpl
-from .printer import PRINTER, PrinterImpl
-from .pulse import PULSE, PulseImpl
 from .random import RANDOM, RandomImpl
 from .simulate import SIMULATE, SimulateImpl
 from .switch import SWITCH, SwitchImpl
@@ -54,11 +54,8 @@ _BUILTINS: list[tuple[NodeType, type[NodeImpl]]] = [
     (SWITCH, SwitchImpl),
     (LATCH, LatchImpl),
     (TIMER, TimerImpl),
-    (DELAY, DelayImpl),
     (BUFFER, BufferImpl),
     (MULTIGATE, MultiGateImpl),
-    (PULSE, PulseImpl),
-    (PRINTER, PrinterImpl),
     (RANDOM, RandomImpl),
     (SIMULATE, SimulateImpl),
     (JOIN, JoinImpl),

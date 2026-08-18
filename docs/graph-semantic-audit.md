@@ -2,7 +2,7 @@
 
 > 依据 [graph-trigger-semantics.md §7](./graph-trigger-semantics.md) 的审查框架,对内核**现有实现**逐项审查——寻找"一个字段、一种端口或一个 API 同时解释两个不同层次的问题"的压缩语义。
 >
-> **审计范围**:`model/`(types.py 端口类型 · node.py 节点类型 · graph.py 图资产 · validate.py 校验器)、`engine/`(protocol.py 节点协议 · runtime.py 执行引擎 · snapshot.py 快照 · signal.py 信号)、`engine/builtins/`(Buffer / Latch / Delay / Join / MultiGate)、`nodes/llm/llm_node.py`(长任务节点)。
+> **审计范围**:`model/`(types.py 端口类型 · node.py 节点类型 · graph.py 图资产 · validate.py 校验器)、`engine/`(protocol.py 节点协议 · runtime.py 执行引擎 · snapshot.py 快照 · signal.py 信号)、`engine/builtins/`(Buffer / Latch / Timer / Join / MultiGate)、`nodes/llm/llm_node.py`(长任务节点)。
 >
 > **判定符号**:✅ 无混合(职责已分离)· ⚠️ 存在混合(需关注)· 🔶 有意识的设计选择(与提案相反但模型自洽)
 >
@@ -101,7 +101,7 @@
 
 - **存储策略内建于节点基类,不可选**:一格最新覆盖 + 新鲜标记 + 触发后消费清空(protocol.py:86-130 `receive` / `consume_inputs` / `clear_input`)——即唯一策略 "Latest + 瞬态消费";
 - **数据生命周期(瞬态 vs 持久)由绑定种类表达**:连线输入 = 瞬态事件(触发后拿走,protocol.py:117-121),常量/全局读取绑定 = 持久输入(`is_bound()`,types.py:99-101,"不参与触发、不消费")。这已是一种策略分化,但**不可按端口声明扩展**;
-- **队列类策略由节点状态模拟**:Buffer 节点用 `state.items` 累积(engine/builtins/buffer.py:48-54)、Delay 用 `state.pending` 装填(delay.py:57-59)——存储策略被实现为**节点逻辑**,不是端口属性。对话提案的 `Latest / Queue / Buffer / Accumulator / Custom` 策略分层在实现中不存在。
+- **队列类策略由节点状态模拟**:Buffer 节点用 `state.items` 累积(engine/builtins/buffer.py:48-54)、Timer 用 `state.pending` 装填(engine/builtins/timer.py:arm 组)——存储策略被实现为**节点逻辑**,不是端口属性。对话提案的 `Latest / Queue / Buffer / Accumulator / Custom` 策略分层在实现中不存在。
 
 ### 判定与建议
 

@@ -22,8 +22,8 @@ def make_multigate_graph():
         NodeInstance("in_b", "Input"),
         NodeInstance("in_c", "Input"),
         NodeInstance("mg", "MultiGate"),
-        NodeInstance("pr_p", "Printer"),
-        NodeInstance("pr_q", "Printer"),
+        NodeInstance("pr_p", "Output"),
+        NodeInstance("pr_q", "Output"),
     ], wires=[
         Wire("in_a", "out", "mg", "int_a"),
         Wire("in_b", "out", "mg", "int_b"),

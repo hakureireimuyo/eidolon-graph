@@ -33,6 +33,7 @@ from ..model import (ACTIVE, INACTIVE, ON_ALL_DATA_READY, ON_ANY_DATA,
 from .protocol import InitContext, NodeImpl, ScheduleContext, TickContext, TickOutput
 from .registry import NodeRegistry
 from .rng import Rng, derive_seed
+from .script import compile_script_impl
 from .subgraph import SubgraphNodeImpl
 
 _MISSING = object()  # 端口无值哨兵(与"值为 None"区分)
@@ -205,6 +206,8 @@ class World:
         self.impl_migrations: dict[str, Any] = {}
         self._impls: dict[str, NodeImpl] = {}
         self._states: dict[str, NodeState] = {}
+        # 脚本节点编译缓存:类型名 → 实现类(同一脚本类型多实例共享一次 exec)
+        self._script_cache: dict[str, type[NodeImpl]] = {}
         self._init_nodes(_stack)
         # 初始化输入(__init__):绑定齐备的立即执行,连线的等待上游首值
         for ni in self.graph.nodes:
@@ -222,6 +225,8 @@ class World:
             if nt.impl.kind == "subgraph":
                 st.inner = self._build_inner(ni, nt, stack)
                 impl: NodeImpl = SubgraphNodeImpl(nt, ni.node_id)
+            elif nt.impl.kind == "script":
+                impl = self._script_impl(nt)()
             else:
                 impl_cls = self.registry.get(nt.impl.name or nt.name)
                 impl = impl_cls()
@@ -242,6 +247,14 @@ class World:
                     self.trigger_in_levels[(ni.node_id, t.name)] = \
                         self._input_signal(ni.node_id, t.name)
             self._resolved_config[ni.node_id] = self._resolve_config(ni.node_id, nt)
+
+    def _script_impl(self, nt: NodeType) -> type[NodeImpl]:
+        """脚本实现类(World 级缓存,类型名 → 实现类)。"""
+        cls = self._script_cache.get(nt.name)
+        if cls is None:
+            cls = compile_script_impl(nt.impl.source, nt.name)
+            self._script_cache[nt.name] = cls
+        return cls
 
     def _build_inner(self, ni: NodeInstance, nt: NodeType, stack: tuple[str, ...]) -> "World":
         gname = nt.impl.graph
@@ -641,7 +654,7 @@ class World:
                     self._signals(nid)
                 self._fire(nid, nt, st, group=g.name,
                            ports=tuple(g.inputs) + tuple(g.triggers))
-                # 源节点的组触发可能改变发射状态(如 Delay 装填、Pulse 调制速率):
+                # 源节点的组触发可能改变发射状态(如 Timer 装填、Clock 调制速率):
                 # 按最新状态重查调度——实时模式下装填的倒计时不被睡眠
                 if nt.is_source():
                     self._reschedule(nid)

@@ -33,7 +33,7 @@
 内核核心(`model/` + `engine/`)**零第三方依赖**,不含 LLM / 网络 / UI:
 
 - 内核核心只实现:图模型、执行引擎、内置逻辑节点、校验器、编辑事务、快照;
-- 内置节点白名单:Clock / Counter / Comparator / AND / OR / NOT / Switch / Latch / Timer / Threshold / Input / Output / Printer / Join / Pulse / Random——领域节点一律不进内核核心;
+- 内置节点白名单(17 个):Clock / Counter / Threshold / Comparator / AND / OR / NOT / Switch / Latch / Timer / Buffer / MultiGate / Random / Simulate / Join / Output / Input——领域节点一律不进内核核心(1.1 合并吸收:Pulse→Clock.sig、Delay→Timer 触发面、Printer→Output.echo);自定义可编程节点走 Script(1.2,宿主注册,见 [graph-script-node.md](./graph-script-node.md));
 - 节点实现由宿主注册:编辑器注入 stub 做预览,eidolon-runtime 注册 LLM 节点 / Context Compiler 节点 / 工具节点等真实实现;
 - 预览不需要特殊"dry-run 模式"——宿主决定注册什么实现,节点协议是唯一边界(见 [节点类型](./graph-node-types.md) §7)。
 
@@ -69,7 +69,7 @@ eidolon-graph(内核核心零依赖;nodes/ 引用能力库)
 内核的第一个交付物是最小验证闭环,**六个验收性质落地为 `tests/test_stage_zero.py`**:
 
 ```
-Clock → Counter → Condition → Printer → Feedback(回连)
+Clock → Counter → Condition → Output → Feedback(回连)
 ```
 
 1. 同一图、同一输入序列,执行结果确定可复现(数据流因果序 + 每节点独立随机流);

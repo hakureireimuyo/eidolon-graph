@@ -50,7 +50,7 @@ def test_trace_recovers_causal_chain():
     g = Graph(name="chain", nodes=[NodeInstance("a", "Clock"),
                                    NodeInstance("b", "Clock"),
                                    NodeInstance("j", "Join"),
-                                   NodeInstance("printer", "Printer")],
+                                   NodeInstance("printer", "Output")],
               wires=[Wire("a", "count", "j", "a"),
                      Wire("b", "count", "j", "b"),
                      Wire("j", "out", "printer", "msg")])
@@ -82,7 +82,7 @@ def test_epoch_boundary_feedback_no_reentry():
     lib, registry = make_env()
     g = Graph(name="epoch", nodes=[NodeInstance("clock", "Clock"),
                                    NodeInstance("counter", "Counter"),
-                                   NodeInstance("printer", "Printer")],
+                                   NodeInstance("printer", "Output")],
               wires=[Wire("clock", "count", "counter", "increment"),
                      Wire("counter", "count", "printer", "msg"),
                      Wire("printer", "echo", "clock", "rate")])  # 数据反馈环

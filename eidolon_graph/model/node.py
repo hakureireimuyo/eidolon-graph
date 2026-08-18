@@ -19,11 +19,12 @@ from .types import (ConfigField, ControlIn, ControlOut, DataIn, DataOut, InputGr
 
 @dataclass
 class ImplBinding:
-    """实现绑定:代码模块(宿主注册)或子图(内部拓扑 + 外部端口→内部端口映射)。"""
+    """实现绑定:代码模块(宿主注册)、子图(内部拓扑 + 端口映射)或内嵌脚本。"""
 
-    kind: Literal["code", "subgraph"] = "code"
+    kind: Literal["code", "subgraph", "script"] = "code"
     name: str | None = None                 # code:实现名(NodeRegistry 键;None → 用类型名)
     graph: str | None = None                # subgraph:图资产名
+    source: str | None = None               # script:内嵌脚本正文(声明 = 编译产物,权威在脚本)
     port_map: dict[str, tuple[str, str]] = field(default_factory=dict)
     # subgraph:外部端口名 → (内部节点 id, 内部端口名);数据端口必须全映射
 

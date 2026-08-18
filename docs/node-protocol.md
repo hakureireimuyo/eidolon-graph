@@ -43,7 +43,7 @@ Graph Runtime 的特殊概念,它们只是图中的某种节点。
 | `groups` | 输入组 = 函数调用:`inputs`(数据参数)+ `triggers`(触发入口)+ `policy`(触发策略,默认 ON_ALL_DATA_READY = 全部有效输入有新值即执行) |
 | `init_in` | 初始化输入:`__init__` 参数端口(构造时一次性) |
 | `auto` | 自走源:每 epoch 运行自动执行一次(时钟 / 脉冲等) |
-| `impl` | 实现绑定(kind=code / subgraph,name = 注册键) |
+| `impl` | 实现绑定(kind=code / subgraph / script;code/subgraph 用 name = 注册键,script 用 source = 内嵌脚本) |
 
 - 声明 = 规则,实现 = 代码,二者分离(规则与事实分离原则的节点版);
 - 声明的序列化形态 = 节点类型资产(JSON),编辑器调色板 / 校验器 / 快照兼容

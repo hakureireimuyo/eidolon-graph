@@ -35,7 +35,7 @@
 | `ON_ALL_DATA_READY`(默认) | 组内**有效**(未关闭)的连线数据输入全部有新值 | 组合节点(Join 类),现状行为 |
 | `ON_ANY_DATA` | 任一有效连线数据输入有新值 | 任一到达即处理 |
 | `ON_TRIGGER` | 任一 TriggerIn 收到激活请求 | 纯事件节点(Buffer.flush、LlmCall._result) |
-| `ON_DATA_AND_TRIGGER` | 数据齐 + 激活请求(先到者等待) | 显式门控执行(Delay.arm) |
+| `ON_DATA_AND_TRIGGER` | 数据齐 + 激活请求(先到者等待) | 显式门控执行(Timer.arm) |
 
 常量/全局读取绑定端口不参与触发,值随读随用;可选参数未接线时不参与触发。
 

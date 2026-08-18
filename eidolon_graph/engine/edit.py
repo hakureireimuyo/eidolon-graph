@@ -16,6 +16,7 @@ from ..model import Graph, NodeInstance, NodeType, ValidationReport, Wire, valid
 from .protocol import NodeImpl
 from .rng import Rng, derive_seed
 from .runtime import CompiledGraph, NodeState, World
+from .script import compile_script_impl
 from .subgraph import SubgraphNodeImpl
 
 # ---------------------------------------------------------------------------
@@ -262,8 +263,11 @@ def _apply_migration(world: World, draft: Graph, plan: MigrationPlan, op_count: 
                 st.inner = None  # 换实现后旧内嵌世界作废(V1:子图状态不迁移)
             if nt.impl.kind == "subgraph" and st.inner is None:
                 st.inner = world._build_inner(ni, nt, stack)
-            impl = (SubgraphNodeImpl(nt) if nt.impl.kind == "subgraph"
-                    else world.registry.get(nt.impl.name or nt.name)())
+            if nt.impl.kind == "script":
+                impl = compile_script_impl(nt.impl.source, nt.name)()
+            else:
+                impl = (SubgraphNodeImpl(nt) if nt.impl.kind == "subgraph"
+                        else world.registry.get(nt.impl.name or nt.name)())
             impl._buffers = dict(old_impl._buffers)  # 输入缓冲随节点保留(新实例接管)
             impl._fresh = set(old_impl._fresh)
             impl._trigger_fresh = set(old_impl._trigger_fresh)  # 触发事件一并保留
@@ -271,8 +275,11 @@ def _apply_migration(world: World, draft: Graph, plan: MigrationPlan, op_count: 
             st = NodeState(state=nt.default_state(), initialized=not bool(nt.init_in))
             if nt.impl.kind == "subgraph":
                 st.inner = world._build_inner(ni, nt, stack)
-            impl = (SubgraphNodeImpl(nt) if nt.impl.kind == "subgraph"
-                    else world.registry.get(nt.impl.name or nt.name)())
+            if nt.impl.kind == "script":
+                impl = compile_script_impl(nt.impl.source, nt.name)()
+            else:
+                impl = (SubgraphNodeImpl(nt) if nt.impl.kind == "subgraph"
+                        else world.registry.get(nt.impl.name or nt.name)())
         new_states[nid] = st
         new_impls[nid] = impl
     world._states = new_states

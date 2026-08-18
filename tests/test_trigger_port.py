@@ -244,7 +244,7 @@ def test_data_payload_fires_and_is_available():
     g = Graph(name="echo", nodes=[
         NodeInstance("in1", "Input"),
         NodeInstance("echo", "EchoTrig"),
-        NodeInstance("printer", "Printer"),
+        NodeInstance("printer", "Output"),
     ], wires=[
         Wire("in1", "out", "echo", "fire"),
         Wire("echo", "out", "printer", "msg"),

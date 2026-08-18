@@ -292,8 +292,10 @@ Node
 
 | 类别 | 能力来源 | 示例 |
 |------|---------|------|
-| 内核原语节点 | Runtime 无法通过普通节点机制完全表达的能力,内核直接实现 | Buffer / Latch / Join / Split / Delay / Source / Trigger |
-| 可编程节点 | 只依赖标准 Node API | read parameter / write parameter / read state / write state / emit trigger / schedule work |
+| 内核原语节点 | 随内核分发的内置节点(17 个,全部为普通节点类型资产,引擎零特殊处理) | Buffer / Latch / Join / Timer / Clock / Output / Input(完整清单见 [工程组织](./graph-kernel-engineering.md) §3 白名单) |
+
+> Split / Source / Trigger 为早期提案,未实现;1.1 合并同构节点:Clock 吸收 Pulse(周期源双输出面)、Timer 吸收 Delay(倒计时器双装填面)、Output 吸收 Printer(日志回显)。
+| 可编程节点 | 只依赖标准 Node API(**已实现 1.2**:Script 节点,见 [graph-script-node.md](./graph-script-node.md)) | read parameter / write parameter / read state / write state / emit trigger / schedule work |
 
 ```
              Eidolon Runtime
