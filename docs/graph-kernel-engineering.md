@@ -34,6 +34,7 @@
 
 - 内核核心只实现:图模型、执行引擎、内置逻辑节点、校验器、编辑事务、快照;
 - 内置节点白名单(17 个):Clock / Counter / Threshold / Comparator / AND / OR / NOT / Switch / Latch / Timer / Buffer / MultiGate / Random / Simulate / Join / Output / Input——领域节点一律不进内核核心(1.1 合并吸收:Pulse→Clock.sig、Delay→Timer 触发面、Printer→Output.echo);自定义可编程节点走 Script(1.2,宿主注册,见 [graph-script-node.md](./graph-script-node.md));
+- 信号节点方向(2026-08-19 收敛,见 [端口语义抽象收敛](./graph-port-capability-composition.md) §3.6):数据 → 信号转换节点(DataToSignal / CompareToSignal / ThresholdToSignal / PredicateToSignal / Script→Signal)作为**普通信号节点类型资产**提供——控制逻辑全部显式存在于图中,内核零特殊处理;
 - 节点实现由宿主注册:编辑器注入 stub 做预览,eidolon-runtime 注册 LLM 节点 / Context Compiler 节点 / 工具节点等真实实现;
 - 预览不需要特殊"dry-run 模式"——宿主决定注册什么实现,节点协议是唯一边界(见 [节点类型](./graph-node-types.md) §7)。
 

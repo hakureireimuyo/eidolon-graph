@@ -6,7 +6,7 @@
 >
 > **判定符号**:✅ 无混合(职责已分离)· ⚠️ 存在混合(需关注)· 🔶 有意识的设计选择(与提案相反但模型自洽)
 >
-> 相关文档:[触发语义设计(审查框架)](./graph-trigger-semantics.md) · [端口、绑定与端口信号](./graph-ports-bindings.md) · [执行模型](./graph-execution-model.md) · [内核设计理念](./kernel-design-philosophy.md)
+> 相关文档:[触发语义设计(审查框架)](./graph-trigger-semantics.md) · [端口、绑定与输入资格](./graph-ports-bindings.md) · [执行模型](./graph-execution-model.md) · [内核设计理念](./kernel-design-philosophy.md)
 
 ## 1. 总览
 
@@ -197,3 +197,28 @@ State vs Event 的**分离本身已达标**(甚至早于触发语义讨论),差�
 2. **真正需要修的是边界 1**:触发语义(函数调用级)仍以端口属性 + 引擎硬编码形式存在——`trigger=True` 标记、fresh 判定、Signal→Trigger 被拒,三处共同构成对话讨论的"压缩语义",是触发模型修正的实际落点;
 3. **边界 4 与 7 是设计权衡而非缺陷**:存储策略硬编码与"引擎无知"决策目前自洽,但**在脚本系统 / 节点 ABI 落地前必须重审**(边界 7 会成为硬约束);
 4. 建议实施顺序:边界 1(触发端口 + 触发策略)→ 边界 7 重审(执行生命周期,配合脚本 ABI)→ 边界 6 增量(trace 结构化)→ 边界 4 按需(存储策略声明)。
+
+## 11. 复审(2026-08-19):端口语义抽象收敛
+
+依据 [端口语义抽象收敛](./graph-port-capability-composition.md) 的讨论,对
+本文档的七边界结论做时点复审。**本文档 §1-§10 是 1.0 时点的历史审计记录,
+保留;本节的复审结论取代其中与新模型冲突的判定。**
+
+| # | 边界 | 1.0 判定 | 2026-08-19 复审 |
+|---|------|---------|----------------|
+| 1 | Data vs Availability | ✅ 已修复(1.0) | **发现第二个压缩**:Data Arrival 同时承担"数据状态更新"与"执行尝试"(Dirty ≠ Execute 未确立)——数据/信号到达顺序进入可观察语义(D1,S2,D4 / D1,D3 问题)。修正:Readiness 检查 + pending 消费模型 |
+| 2 | Signal vs Enable | ✅ 已分离 | **升级为统一**:enable(节点级)与端口信号(端口级)是同一资格机制的两个作用域(level + pending);不再需要"区分两类控制" |
+| 4 | Data vs Buffer | ⚠️ 存储策略硬编码 | **建议落实**:缓存策略提升为端口声明属性(Replace 默认 / Append);Buffer = Append + 显式 TriggerIn,不再依赖组声明序 |
+| — | 输出信号(旧 §3.2 自动传导) | 未审计(属于设计) | **删除**:输出侧无隐式信号;"没有输出"不是事件,不产生"无事件事件";死等 = 拓扑诊断警告 |
+| 5 | Node vs Scheduler | ✅ 分离良好 | 保持;缺口(显式请求 API)由 Activation 与 Readiness 分离部分缓解(TriggerIn = 显式激活请求) |
+| 6 | State vs Event | ✅ 三层分离 | 保持;因果身份(causal_id)补 trace 的结构化关联(提案 §5.3 的增量) |
+| 7 | Execution vs Completion | 🔶 有意识的反向决策 | 保持;脚本节点 ABI 落地前仍需重审 |
+
+**新模型的审计原则补充**:
+
+- "一个概念同时回答两个不同层次的问题"的压缩审查继续有效——本次发现
+  的压缩实例:**Data Arrival = State Update + Execution Attempt**、**输出
+  "没有输出"被编码成事件**、**Signal 同时承担状态与输出报告**;
+- 审查方法升级:冻结概念后**寻找反例**——以极端组合矩阵测试内核不变量
+  (清单见 [端口语义抽象收敛](./graph-port-capability-composition.md) §6),而不是
+  继续堆叠抽象。

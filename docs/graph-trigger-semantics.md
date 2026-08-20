@@ -4,7 +4,7 @@
 >
 > 本文档是**设计决策记录**:已实现的行为与提案内容明确区分;提案部分不构成当前实现。
 >
-> 相关文档:[图运行时总纲](./graph-runtime-overview.md) · [执行模型](./graph-execution-model.md) · [端口、绑定与端口信号](./graph-ports-bindings.md) · [节点类型](./graph-node-types.md) · [内核设计理念](./kernel-design-philosophy.md)
+> 相关文档:[图运行时总纲](./graph-runtime-overview.md) · [执行模型](./graph-execution-model.md) · [端口、绑定与输入资格](./graph-ports-bindings.md) · [节点类型](./graph-node-types.md) · [内核设计理念](./kernel-design-philosophy.md)
 
 ## 1. 背景:数据端口同时回答两个问题
 
@@ -96,10 +96,13 @@ Signal
 | 连接 | 合法性 | 语义 |
 |------|--------|------|
 | Data → Data Port | ✓ | 参数绑定(数据传递) |
-| Signal → Control Port | ✓ | 参数绑定(控制端口状态) |
+| Signal → Signal Port / 数据端口资格槽 | ✓ | 参数绑定(输入资格,更新 level + pending) |
 | Data → Trigger Port | ✓ | 调用请求(Data 到达触发端口 → 一次 activation) |
-| Signal → Trigger Port | ✓ | 调用请求(Signal 到达触发端口 → 一次 activation) |
-| Signal → Data Port | ✗ | 类型污染,非法 |
+| Signal → Trigger Port | ✓ | 调用请求(Signal Event 到达触发端口 → 一次 activation,每次事件 = 新请求) |
+| Signal → 纯数据端口(未声明资格槽) | ✗ | 类型污染,非法 |
+
+> 2026-08-19 更新:旧"Control Port"更名为信号端口(signal-in/signal-out);
+> 数据端口的信号绑定收敛为**可选资格槽声明**(见 [端口、绑定与输入资格](./graph-ports-bindings.md) §2)。
 
 > **连接线的类型决定"传递什么";端口的类型决定"节点如何消费它"。**
 
@@ -383,3 +386,25 @@ Native 节点、Python 脚本节点、LLM 节点共享同一套执行语义—�
 3. **一等语义**:Trigger 生命周期、Trigger Context、因果链数据输出(供编辑器/调试器消费)——待实施(trace 已有访问粒度因果时间线,见 [语义职责审计](./graph-semantic-audit.md) 边界 6);
 4. **节点接口**:标准 Node API(parameters / triggers / state / execute(context)),脚本只能通过 `context.emit_trigger()` 产生新触发,不得绕过调度器——待脚本系统落地;
 5. **语义审计**:**已完成**,见 [语义职责审计:内核实现现状逐项审查](./graph-semantic-audit.md)(结论:边界 1 触发语义是实际修正落点,边界 2/3/5/6 已分离良好,边界 7 为有意识的反向决策)。
+
+## 10. 后续演进(2026-08-19):触发与资格的统一
+
+2026-08-19 端口语义抽象讨论(见 [端口语义抽象收敛](./graph-port-capability-composition.md))
+进一步收敛了触发与信号的关系,本文档的模型在上层保持一致,以下是增量:
+
+1. **触发判定改为 Readiness 检查**:组触发 = 端口状态推导(动态输入
+   `pending` 聚合 + 资格条件叠加),而非"数据到达即触发";**Dirty ≠
+   Execute**——任何相关输入状态变化(Data 或 Signal)都使节点 Dirty、
+   重新评估 Readiness,Data 与 Signal 在调度层面完全对称;
+2. **Activation 与 Readiness 分离**:基类默认触发策略 = 隐式激活(状态
+   变化 → 自动检查 Readiness);显式 TriggerIn = 覆盖激活策略(本文档
+   §4.1 的两种模式即为此);Trigger 的"请求执行"职责不变;
+3. **Signal 收敛为输入资格**:Signal Event 更新 `level + pending`;执行
+   条件 = `Data.pending AND Signal.pending AND Signal.level == HIGH`;
+   未连接资格槽 = 条件恒成立(结构属性,非隐式事件)——消除了数据/信号
+   到达顺序对结果的影响(D1/S1 配对案例见 [端口语义抽象收敛](./graph-port-capability-composition.md) §4);
+4. **输出侧无隐式信号**:Signal 不承担"节点是否产生输出"的状态报告;
+   死等 = 拓扑诊断警告;数据 → 信号转换节点(DataToSignal 等)显式构造
+   控制流;
+5. **触发端口与信号的连接规则保持不变**(§2.3):Data/Signal → TriggerIn
+   均合法,每次 Signal Event(含同电平重复)都是一次新的激活请求。

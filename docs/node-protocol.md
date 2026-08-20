@@ -35,12 +35,12 @@ Graph Runtime 的特殊概念,它们只是图中的某种节点。
 | 声明 | 含义 |
 |------|------|
 | `name` | 类型名(注册与图资产引用的键) |
-| `data_in` / `data_out` | 数据端口:可选参数、const 绑定、全局读写 |
-| `trigger_in` | 触发端口(TriggerIn):**函数调用入口**——数据线(载荷)或信号线(电平变化)到达 = 激活请求 |
-| `control_in` / `control_out` | 控制端口(信号):门控 / 电平语义 |
+| `data_in` / `data_out` | 数据端口:可选参数、const 绑定、全局读写、**资格槽(可选)**、**缓存策略(Replace / Append)** |
+| `trigger_in` | 触发端口(TriggerIn):**函数调用入口(激活请求)**——Data Event(载荷 + 激活)或 Signal Event(每次事件 = 新的激活请求,同电平重复也有效)到达 = 激活请求 |
+| `signal_in` / `signal_out` | 信号端口(输入资格):enable(节点级资格)/ 端口级资格槽;**signal-out 仅信号节点声明**(取代旧 control-in/out) |
 | `state` | 状态字段表(保序、默认值)——**实例跨轮事实的唯一存储** |
 | `config` | 配置字段表(类型默认 + 编辑期覆盖) |
-| `groups` | 输入组 = 函数调用:`inputs`(数据参数)+ `triggers`(触发入口)+ `policy`(触发策略,默认 ON_ALL_DATA_READY = 全部有效输入有新值即执行) |
+| `groups` | 输入组 = 函数调用:`inputs`(数据参数)+ `triggers`(触发入口)+ `policy`(触发策略,默认 ON_ALL_DATA_READY = 全部动态输入 pending 且资格满足即执行) |
 | `init_in` | 初始化输入:`__init__` 参数端口(构造时一次性) |
 | `auto` | 自走源:每 epoch 运行自动执行一次(时钟 / 脉冲等) |
 | `impl` | 实现绑定(kind=code / subgraph / script;code/subgraph 用 name = 注册键,script 用 source = 内嵌脚本) |
@@ -60,12 +60,13 @@ Graph Runtime 的特殊概念,它们只是图中的某种节点。
 实现侧接口(Python 参考实现):
 
 - `tick(ctx) -> TickOutput`:一个输入组执行一次。`ctx.group` = 组名(源节点
-  自走执行为 `"step"`);`ctx.data_in` 只含本组已解析输入(被信号关闭的端口
-  不出现);`ctx.control_in` 电平永远有定义;`ctx.state` 为当前状态深拷贝;
-  `ctx.config` 只读;`ctx.rng` 本节点独立随机流(种子 = 世界种子 + 节点 id
-  派生,同图同输入序列结果唯一)。
-- `TickOutput.data_out`:数据产出(不写即不投递);
-- `TickOutput.control_out`:信号产出(**仅信号节点可写**,未写保持原电平);
+  自走执行为 `"step"`);`ctx.data_in` 只含本组已解析输入(资格关闭的端口
+  以**默认属性**参与,见 [端口、绑定与输入资格](./graph-ports-bindings.md)
+  §2.3);`ctx.signal_in` 电平与 pending 永远有定义;`ctx.state` 为当前状态
+  深拷贝;`ctx.config` 只读;`ctx.rng` 本节点独立随机流(种子 = 世界种子 +
+  节点 id 派生,同图同输入序列结果唯一)。
+- `TickOutput.data_out`:数据产出(不写即不投递;没有隐式输出信号);
+- `TickOutput.signal_out`:信号产出(**仅信号节点可写**,未写保持原电平);
 - `TickOutput.state`:状态变更字段增量(与现有状态合并)。
 - `init(ctx) -> state 增量`:初始化输入就绪后执行一次,方法组在此前不执行。
 - `schedule(ctx) -> 秒数`:实时模式下源节点的发射周期(每次发射后按最新

@@ -29,7 +29,9 @@ eidolon-graph/nodes/llm(封装层)      节点声明 + 执行逻辑 + LlmBridge 
 prompt 齐全 → 组 "call" 触发 → pending 凭证进 state(等待,不产出)
 LlmBridge.poll() 发现 pending → LlmClient.complete(重试/超时在能力库)
 结果到达 → 桥注入 run([Event(node, "_result", {"value": ...})])
-组 "complete" 触发 → response 因果传播(失败则 failed 信号拉高)
+组 "complete" 触发 → response 因果传播(失败则经显式 signal_out `failed`
+输出 Signal Event——信号输出仅信号节点显式声明,失败状态是显式控制事件,
+不是隐式输出信号,见 [端口语义抽象收敛](./graph-port-capability-composition.md) §3.6)
 ```
 
 - **空触发必须容忍**(协议 §4):完成端口是可选参数,组在每次节点访问都
